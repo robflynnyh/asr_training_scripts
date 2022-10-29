@@ -12,6 +12,8 @@ from torch.optim.lr_scheduler import CyclicLR
 from model_utils import load_checkpoint, load_nemo_checkpoint, load_sc_model as load_model, write_to_log, \
     squeeze_batch_and_to_device, save_checkpoint, draw_text, load_schedular_data, save_schedular_data
 
+from tools import exists, isfalse, istrue, ifexists_call, iftrue_call
+
 from contextlib import nullcontext
 
 import torch_optimizer
@@ -19,16 +21,8 @@ from torch_ema import ExponentialMovingAverage
 # gradscaler
 from torch.cuda.amp import GradScaler   
 
+
 INTERPOLATE = 0.5
-
-
-def exists(var):
-    return var is not None
-
-def isfalse(var):
-    return var == False
-def istrue(var):
-    return var == True
 
 
 def update_schedular(args, optim, schedular):
@@ -171,10 +165,8 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
             scaler.update() if exists(scaler) else None
             optim.zero_grad() 
 
-            if exists(schedular):
-                schedular.step()
-            if exists(ema):
-                ema.update() # update the moving average of the parameters
+            schedular.step() if exists(schedular) else None
+            ema.update() if exists(ema) else None
 
             cur_loss = sum(loss_iterim)
             loss_iterim = []
@@ -190,8 +182,6 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
     loss_end = sum(losses) / len(losses)
     if args.wandb:
         wandb.log({'train_loss_end': loss_end})
-
-    torch.cuda.empty_cache() # to avoid memory leaks
 
     return loss_end
     
@@ -233,7 +223,7 @@ def main(args):
 
     # print parameters
     total_params = 0
-    for name, param in model.named_parameters():
+    for _, param in model.named_parameters():
         if param.requires_grad:
             total_params += param.numel()
     print(f'\nTotal number of parameters: {total_params/1e6}M\n')
@@ -251,7 +241,7 @@ def main(args):
     scaler = GradScaler() if args.mixed_precision else None
 
     if args.wandb:
-        wandb.init(project=args.wandb_project, config=args) if args.wandb_id == '' else wandb.init(project=args.wandb_project, id=args.wandb_id, resume="must", config=args)
+        wandb.init(project="deliberation-Custom_ami", config=args) if args.wandb_id == '' else wandb.init(project="deliberation-Custom_ami", id=args.wandb_id, resume="must", config=args)
         wandb.watch(model, log="all")
         wandb.config.update({'total_params': total_params})
         print(f'\nLoggging with Wandb id: {wandb.run.id}\n')
@@ -260,7 +250,6 @@ def main(args):
     saved_checkpoints = []
     for epoch_ in range(args.epochs): # todo move epoch loop to model utils as is consistent across model types
         epoch = epoch_ + epoch_prev
-        #train_dataloader.sampler.set_epoch(epoch)
 
         loss = train_one_epoch(model, optim, schedular, train_dataloader, device, scaler, ema)          
 
@@ -276,8 +265,7 @@ def main(args):
         with ema.average_parameters(): # evaluate using ema of the parameters
             vloss = validate_one_epoch(model, dev_dataloader, device, sanity_check=False)
 
-        if args.wandb:
-            wandb.log({'val_loss': vloss, 'epoch': epoch})
+        iftrue_call(args.wandb, wandb.log, {'val_loss': vloss, 'epoch': epoch})
 
         print(f'\n\n\n--- Epoch {epoch}, Validation Loss: {vloss} ---\n\n\n')
         write_to_log(args.log_file, f'{epoch} - {vloss}')
@@ -344,7 +332,7 @@ if __name__ == '__main__':
     parser.add_argument('--no_load_optim', action='store_true', help='if set, will not load optimizer state from checkpoint')
 
     parser.add_argument('--clip_gradients', action='store_true')
-    parser.add_argument('--clip_gradients_value', type=float, default=10.0)
+    parser.add_argument('--clip_gradients_value', type=float, default=5.0)
 
     parser.add_argument('--micro_batch_duration', type=int, default=45, help='batch size for non-i.i.d micro batches')
     parser.add_argument('--micro_batch_number', type=int, default=1, help='number of i.i.d micro batches per mini-batch')
@@ -362,13 +350,11 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=1, help='number of workers for dataloader')
 
     parser.add_argument('--self_distillation', action='store_true', help='if set, will use self distillation')
-
-    parser.add_argument('-wp','--wandb_project', type=str, default='deliberation-Custom_ami', help='wandb project name')
   
 
     args = parser.parse_args()
 
-    assert args.self_distillation == False or args.mixed_precision == False, 'Self distillation does not work with mixed precision (yet)'
+    assert args.self_distillation == False or args.mixed_precision == False, 'Self distillation does not work with mixed precision'
 
     if args.checkpoint != '':
         args.checkpoint = os.path.join(args.checkpoint_dir, args.checkpoint)

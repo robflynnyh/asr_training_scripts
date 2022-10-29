@@ -65,26 +65,22 @@ model:
     _target_: nemo.collections.asr.modules.SelfConditionedConformerEncoder
     feat_in: ${model.preprocessor.features}
     feat_out: -1 # you may set it if you need different output size other than the default d_model
-    n_layers: 9
-    d_model: 256
+    n_layers: 16
+    d_model: 176
+
+    checkpoint_every_n_layers: 1 # set to 0 to disable checkpointing
 
     # Sub-sampling params
     subsampling: striding # vggnet or striding, vggnet may give better results but needs more memory
     subsampling_factor: 4 # must be power of 2
     subsampling_conv_channels: -1 # -1 sets it to d_model
 
-
-    GAU: false
-    checkpoint_every_n_layers: 1 # set to non-zero to enable checkpointing
     # Feed forward module's params
     ff_expansion_factor: 4
 
     # Multi-headed Attention Module's params
-    self_attention_model: flash # rel_pos or abs_pos or flash or myopic
-    max_keep_keys: 384
-    chunk_window: 48
-
-    n_heads: 8 # may need to be lower for smaller d_models
+    self_attention_model: rel_pos # rel_pos or abs_pos
+    n_heads: 4 # may need to be lower for smaller d_models
     # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
     att_context_size: [-1, -1] # -1 means unlimited context
     xscaling: true # scales up the input embeddings by sqrt(d_model)
@@ -96,7 +92,6 @@ model:
     conv_kernel_size: 31
     conv_norm_type: 'batch_renorm' # batch_norm or layer_norm
 
-
     ### regularization
     dropout: 0.1 # The dropout used in most of the Conformer Modules
     dropout_emb: 0.0 # The dropout used for embeddings
@@ -107,7 +102,7 @@ model:
     feat_in: null
     num_classes: -1
     vocabulary: []
-    gating: False # uses a gating function rather than addition to incorporate softmax posteriors 
+    gating: false # uses a gating function rather than addition to incorporate softmax posteriors 
     reproject_type: 'linear' # linear or conv
 
   optim:
