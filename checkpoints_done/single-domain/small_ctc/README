@@ -1,0 +1,15 @@
+config: conformer_ctc_bpe_small.yaml
+Trained on: AMI
+Parameters: 13m
+Type: CTC
+
+WERs:
+greedy: 27.7 
+lm: 23.7
+n-gram config:
+model: 3gram.kn012
+alpha: 0.6
+beta: 0.8
+beam width: 500
+tuned? yes but for beam width of 100
+

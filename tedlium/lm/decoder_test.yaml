@@ -1,0 +1,75 @@
+
+name: "Megatron-GPT"
+
+model:
+  # recommend small vocab size of 128 or 256 when using 4x sub-sampling
+  # you may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
+  tokenizer:
+    dir: "./tokenizer_spe_bpe_v128/" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
+    type: bpe  # Can be either bpe (SentencePiece tokenizer) or wpe (WordPiece tokenizer)
+  
+  modeltype: S4
+
+  very_small_transformer:
+    d_model: 128
+    n_heads: 4
+    max_seq_len: -1
+    n_layers: 12
+    rotary_pos_emb: true
+
+  small_transformer:
+    d_model: 176
+    n_heads: 4
+    max_seq_len: -1
+    n_layers: 12
+    rotary_pos_emb: true
+
+  base_transformer:
+    d_model: 256
+    n_heads: 8
+    max_seq_len: -1
+    n_layers: 12
+    rotary_pos_emb: true
+
+  baseplus_transformer:
+    d_model: 256
+    n_heads: 8
+    max_seq_len: -1
+    n_layers: 14
+    rotary_pos_emb: true
+
+  medium_transformer:
+    d_model: 256
+    n_heads: 8
+    max_seq_len: -1
+    n_layers: 16
+    rotary_pos_emb: true
+
+  mediumplus_transformer:
+    d_model: 256
+    n_heads: 8
+    max_seq_len: -1
+    n_layers: 16
+    rotary_pos_emb: true
+
+
+  S4:
+    measure: legs
+    mode: nplr
+    transposed: false
+    d_model: 512
+    d_state: 64
+    n_layers: 6
+
+  perceiverAR:
+    max_seq_len: -1
+    d_model: 256
+    depth: 12
+    n_heads: 8
+    cross_attn_seq_len: 256
+    dim_head: 32
+    cross_attn_dropout: 0.4
+    perceive_max_heads_process: 2
+
+
+

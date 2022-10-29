@@ -1,0 +1,44 @@
+program: eval_ctc_reuse.py
+method: bayes
+metric:
+  name: WER
+  goal: minimize
+parameters:
+  alpha:
+    min: 0.0
+    max: 1.0
+  beta:
+    min: 0.8
+    max: 1.2
+  beam_prune_logp:
+    min: -20.0
+    max: -1.0
+  token_min_logp:
+    min: -10.0
+    max: -1.0
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - "--checkpoint_dir"
+  - "../checkpoints_done/ami_acc_sc_ctc_folded"
+  - "--batch_size"
+  - "5"
+  - "--sweep"
+  - "-sc"
+  - "--split"
+  - "dev"
+  - "-lm"
+  - "bigmix_ami.arpa"
+  - "--checkpoint"
+  - "checkpoint_326_id_5.pt"
+  - "--model_config"
+  - "../model_configs/conformer_folded_sc_ctc_bpe_smallish.yaml"
+  - "-load_logits"
+  - "./eval_logits/dev_folded_326.pkl"
+  - "--beam_size"
+  - "100"
+  - ${args}  
+  
+   
+  

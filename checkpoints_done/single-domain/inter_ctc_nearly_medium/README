@@ -1,0 +1,15 @@
+config: conformer_sc_ctc_bpe_nearly_medium.yaml (with self-conditioning disabled)
+Trained on: AMI
+Parameters: 27m
+Type: interCTC
+
+WERs:
+greedy: 24.8 
+lm: 21.1
+n-gram config:
+model: 3gram.kn012
+alpha: 0.6
+beta: 0.8
+beam width: 500
+tuned? tuned for smaller model with beam width of 100
+

@@ -1,0 +1,13 @@
+python eval_ctc_reuse.py  \
+    --checkpoint_dir '../checkpoints_done/single-domain/sc_ctc_small' \
+    --checkpoint 'checkpoint_204_id_93.pt' \
+    --model_config '../model_configs/conformer_sc_ctc_bpe_small.yaml' \
+    --batch_size 50 \
+    -lm './ngrams/3gram-6mix.arpa' \
+    --beam_size 150 \
+    --beam_prune_logp -10.466836794439956 \
+    --token_min_logp -4.178187657336318 \
+    --split 'test' \
+    --alpha 0.6 \
+    --beta 0.8 \
+    -sc \

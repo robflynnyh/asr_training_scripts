@@ -1,0 +1,17 @@
+*.ckpt
+*.wav
+*.npy
+*.pt
+*.trn.*
+*.trn
+*.model
+*.npy
+*.log
+*.arpa
+*.gz
+
+wandb/
+wandb/*
+*/wandb/ 
+
+
