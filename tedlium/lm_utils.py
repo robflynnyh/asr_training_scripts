@@ -170,36 +170,6 @@ class PerceiverARadapter(nn.Module):
     def forward(self, x, mask=None):
         return self.model(x=x, prefix_mask=mask, labels=None)
 
-class FrequencyAttention(nn.Module):
-    def __init__(
-        self,
-        *,
-        K = 4,
-        dropout = 0.
-    ):
-        super().__init__()
-        self.K = K
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        freqs = torch.fft.rfft(x, dim = 1)
-
-        # get amplitudes
-
-        amp = freqs.abs()
-        amp = self.dropout(amp)
-
-        # topk amplitudes - for seasonality, branded as attention
-
-        topk_amp, _ = amp.topk(k = self.K, dim = 1, sorted = True)
-
-        # mask out all freqs with lower amplitudes than the lowest value of the topk above
-
-        topk_freqs = freqs.masked_fill(amp < topk_amp[:, -1:], 0.+0.j)
-
-        # inverse fft
-
-        return torch.fft.irfft(topk_freqs, dim = 1, n = x.shape[1])
 
 class S4adapter(nn.Module):
     '''
@@ -226,8 +196,7 @@ class S4adapter(nn.Module):
                 nn.ModuleList([
                     S4(**s4config),
                     self.GatedLinearUnit(s4config['d_model']),
-                    nn.LayerNorm(s4config['d_model']),
-                    FrequencyAttention(K=4, dropout=0.1),
+                    nn.LayerNorm(s4config['d_model'])
                 ])
             )
         self.network.append(self.predict)
@@ -265,13 +234,11 @@ class S4adapter(nn.Module):
             tokens = torch.cat([tokens, next_token.unsqueeze(0).unsqueeze(0)], dim=1)
         return tokenizer.ids_to_text(tokens[0].tolist())    
 
-
     def _forward(self, u, lengths, return_states=False, states=None):
         model_states_dict = {}
         x = u
-        for i, (s4, gl, ln, freq) in enumerate(self.network[:-1]):
+        for i, (s4, gl, ln) in enumerate(self.network[:-1]):
             #if self.training:
-            latent = freq(x) # DONT DO THIS AT ALL
             x = x - latent
             state = None if states is None else states[i]
             x_out, state = s4(u=x, lengths=lengths, state=state)
