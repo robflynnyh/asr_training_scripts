@@ -112,10 +112,11 @@ class MyopicAttention(nn.Module):
     def causal_windowed_mask(window_number, window_size, device):
         return torch.ones(window_number, window_number, device=device).triu(1).bool().repeat_interleave(window_size, dim=1)
 
-    def forward(self, x, mask, pos_fn, return_attention=False):
-        assert mask is not None, 'pls wear a mask'
+    def forward(self, x, pos_fn, mask=None, return_attention=False):
         assert pos_fn is not None, 'pls provide a position function'
         B, N, C, H, D = *x.shape, self.n_heads, self.head_dim
+        if mask is None:
+            mask = torch.zeros(B, N, device=x.device, dtype=torch.bool)
 
         tokeep = min(self.max_keep_keys, N) if self.max_keep_keys != -1 else N # number of keys to keep
         W = min(self.W, N) if self.W != -1 else N # window size
@@ -147,7 +148,7 @@ class MyopicAttention(nn.Module):
 
         if self.causal:
             causal_mask = self.causal_windowed_mask(window_number=NW, window_size=W, device=q.device)
-            cmask = cmask & causal_mask
+            cmask = torch.logical_or(cmask, causal_mask)
         
         chunkgrid = chunkgrid.masked_fill(cmask, torch.finfo(q.dtype).max) # max cus we topk in reverse order 
 
@@ -177,7 +178,7 @@ class MyopicAttention(nn.Module):
 
         if self.causal:
             causal_mask = keep_indices > rearrange(torch.arange(0, N, device=q.device), "(nw w) -> nw w ()", w=W, nw=NW)
-            qk_mask = qk_mask & causal_mask
+            qk_mask = torch.logical_or(qk_mask, causal_mask)
     
         dots.masked_fill_(qk_mask, -torch.finfo(dots.dtype).max)
 
@@ -191,7 +192,17 @@ class MyopicAttention(nn.Module):
 
 
 class macaron_transformer(nn.Module):
-    def __init__(self, dim, depth, heads, dim_head, causal=True, max_keep_keys=-1, W=-1):
+    def __init__(
+            self, 
+            dim, 
+            depth, 
+            heads, 
+            dim_head, 
+            causal=True, 
+            max_keep_keys=-1, 
+            W=-1,
+            checkpoint=False,
+        ):
         super().__init__()
 
         self.positional_bias = DynamicPositionBias(

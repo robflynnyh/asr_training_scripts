@@ -80,13 +80,16 @@ if __name__ == '__main__':
     
     parser.add_argument('--max_len', type=int, default=1862)
     parser.add_argument('--batch_size', type=int, default=10)
-    parser.add_argument('--device', type=str, default='cpu')
+    parser.add_argument('--device', type=str, default='auto')
     parser.add_argument('--max_gpu_duration', type=float, default=-1)
     parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=3.0, help='max allowed gap between utterances in seconds')
 
     parser.add_argument('--checkpoint', type=str, default='')
-
     args = parser.parse_args()
+
+    if args.device == 'auto':
+        args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        
     if args.checkpoint == '':
         print('No checkpoint specified...')
         ckpt = input('Please specify a checkpoint to evaluate: ')
