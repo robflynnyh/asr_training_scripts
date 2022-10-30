@@ -278,6 +278,21 @@ def load_model(config:OmegaConf, tokenizer, max_len:int=None):
                 rotary_pos_emb = modelconfig.get('rotary_pos_emb', True)
             )
         )
+    elif 'myopic' in mtype:
+        from lm.myopic_attention import transformer_lm
+        assert mtype in modelconfig
+        modelconfig = modelconfig[mtype]
+        model = transformer_lm(
+            dim = modelconfig.get('d_model', 256),
+            vocab_size=tokenizer.vocab_size,
+            depth = modelconfig.get('n_layers', 12),
+            heads = modelconfig.get('n_heads', 8),
+            max_keep_keys=modelconfig.get('max_keep_keys', 256),
+            W = modelconfig.get('W', 48),
+            dim_head = modelconfig.get('dim_head', 32),
+            causal=True
+        )
+
     elif mtype == 'perceiverAR':
         from perceiver_ar_pytorch import PerceiverAR
         assert 'perceiverAR' in modelconfig
