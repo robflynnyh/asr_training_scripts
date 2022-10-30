@@ -182,6 +182,7 @@ class S4adapter(nn.Module):
             n_layers = 4,
         ):
         super().__init__()
+        raise NotImplementedError
         from lm.s4 import S4
         
         self.vocab_size = vocab_size

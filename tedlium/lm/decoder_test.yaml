@@ -11,9 +11,13 @@ model:
   modeltype: myopic_test
 
   myopic_test:
-    d_model: 256
+    d_model: 176
     W: 48
-    max_keep_keys: 48
+    max_keep_keys: 125
+    n_layers: 12
+    n_heads: 8
+    dim_head: 32
+
 
 
   very_small_transformer:
