@@ -108,7 +108,8 @@ class MyopicAttention(nn.Module):
         #chunk_grid = 1 - (chunk_grid / chunk_grid.max(dim=-1)[0].unsqueeze(-1)) # don't normalize cus it'll stretch the distribution by sequence length
         return chunk_grid    
 
-    def causal_windowed_mask(self, window_number, window_size, device):
+    @staticmethod
+    def causal_windowed_mask(window_number, window_size, device):
         return torch.ones(window_number, window_number, device=device).triu(1).bool().repeat_interleave(window_size, dim=1)
 
     def forward(self, x, mask, pos_fn, return_attention=False):
@@ -155,8 +156,7 @@ class MyopicAttention(nn.Module):
         kv = kv.gather(-2, repeat(keep_indices, "kv b h w n -> kv b h w n d", d=D))
 
         kv_mask = repeat(mask, "b n -> b h nw n", h=H, nw=NW)
-        if self.causal:
-            kv_mask = kv_mask & causal_mask 
+     
         kv_mask = kv_mask.gather(-1, keep_indices[0])
 
         k, v = kv
@@ -168,14 +168,18 @@ class MyopicAttention(nn.Module):
         pos_bias = repeat(pos_bias, 'h i j -> b h i j', b = B)
         pos_bias = rearrange(pos_bias, 'b h (n w) j -> b h n w j', w = W)
 
-        pos_bias = pos_bias.gather(-1, repeat(keep_indices, "kv b h nw n -> kv b h nw w n", w=W)[0])
+        keep_indices = repeat(keep_indices, "kv b h nw n -> kv b h nw w n", w=W)[0] 
+        pos_bias = pos_bias.gather(-1, keep_indices)
         
         dots = dots + pos_bias
 
-  
-        mask_val = -torch.finfo(dots.dtype).max
         qk_mask = rearrange(q_mask, "b h n w -> b h n w ()") * rearrange(kv_mask, "b h w n -> b h w () n")
-        dots.masked_fill_(qk_mask, mask_val)
+
+        if self.causal:
+            causal_mask = keep_indices > rearrange(torch.arange(0, N, device=q.device), "(nw w) -> nw w ()", w=W, nw=NW)
+            qk_mask = qk_mask & causal_mask
+    
+        dots.masked_fill_(qk_mask, -torch.finfo(dots.dtype).max)
 
         attn = dots.softmax(dim=-1)
   
