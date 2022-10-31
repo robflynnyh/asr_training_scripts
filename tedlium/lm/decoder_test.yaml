@@ -2,23 +2,20 @@
 name: "Megatron-GPT"
 
 model:
-  # recommend small vocab size of 128 or 256 when using 4x sub-sampling
-  # you may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
   tokenizer:
     dir: "./tokenizer_spe_bpe_v128/" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
-    type: bpe  # Can be either bpe (SentencePiece tokenizer) or wpe (WordPiece tokenizer)
+    type: bpe  # has to be bpe (u have no choice)
   
   modeltype: myopic_test
 
   myopic_test:
-    d_model: 176
+    d_model: 256
     W: 48
-    max_keep_keys: 125
+    max_keep_keys: 128
     n_layers: 12
     n_heads: 8
     dim_head: 32
-
-
+    
 
   very_small_transformer:
     d_model: 128
