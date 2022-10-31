@@ -276,7 +276,8 @@ def load_model(config:OmegaConf, tokenizer, max_len:int=None):
                 dim = modelconfig.get('d_model', 256),
                 depth = modelconfig.get('n_layers', 12),
                 heads = modelconfig.get('n_heads', 8),
-                rotary_pos_emb = modelconfig.get('rotary_pos_emb', True)
+                rotary_pos_emb = modelconfig.get('rotary_pos_emb', False),
+                dynamic_pos_bias = modelconfig.get('dynamic_pos_bias', True),
             )
         )
     elif 'myopic' in mtype:
@@ -288,7 +289,7 @@ def load_model(config:OmegaConf, tokenizer, max_len:int=None):
             vocab_size=tokenizer.vocab_size,
             depth = modelconfig.get('n_layers', 12),
             heads = modelconfig.get('n_heads', 8),
-            max_keep_keys=modelconfig.get('max_keep_keys', 256),
+            max_keep_keys=modelconfig.get('max_keep_keys', 128),
             W = modelconfig.get('W', 48),
             dim_head = modelconfig.get('dim_head', 32),
             causal=True
