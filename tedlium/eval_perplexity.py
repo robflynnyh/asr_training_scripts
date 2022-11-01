@@ -89,7 +89,7 @@ if __name__ == '__main__':
 
     if args.device == 'auto':
         args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        
+
     if args.checkpoint == '':
         print('No checkpoint specified...')
         ckpt = input('Please specify a checkpoint to evaluate: ')

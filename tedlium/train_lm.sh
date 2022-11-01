@@ -1,20 +1,20 @@
 echo '<<< TRAINING AUTOREGRESSIVE TLM >>>'
 
-python train_LM.py --checkpoint 'checkpoint_11_id_18.pt' \
-    --checkpoint_dir './checkpoint_myopic_test' \
+python train_LM.py --checkpoint '' \
+    --checkpoint_dir './checkpoint_dp_learnable_myopic_test' \
     --model_config './lm/decoder_test.yaml' \
     --min_lr 1e-6 \
     --max_lr 2.75e-4 \
-    --step_size 50 \
-    --accumulate_gradients 2 \
+    --step_size 60 \
+    --accumulate_gradients 1 \
     --clip_gradients \
     --clip_gradients_value 10 \
     --micro_batch_duration 60 \
-    --micro_batch_number 15 \
+    --micro_batch_number 30 \
     --max_allowed_utterance_gap 3.0 \
-    --wandb_id '3le3g44y' \
+    --wandb_id '' \
     --save_top_k 1 \
-    --schedular_data 'mtest.json' 
+    --schedular_data 'dp_learnable_myopic_test.json' 
     
 
 

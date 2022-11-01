@@ -292,7 +292,8 @@ def load_model(config:OmegaConf, tokenizer, max_len:int=None):
             max_keep_keys=modelconfig.get('max_keep_keys', 128),
             W = modelconfig.get('W', 48),
             dim_head = modelconfig.get('dim_head', 32),
-            causal=True
+            causal=True,
+            dropout= modelconfig.get('dropout', 0.0),
         )
 
     elif mtype == 'perceiverAR':
