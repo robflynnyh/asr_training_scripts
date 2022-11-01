@@ -10,11 +10,12 @@ model:
 
   myopic_test:
     d_model: 256
-    W: 48
-    max_keep_keys: 128
+    W: 40
+    max_keep_keys: 150
     n_layers: 12
     n_heads: 8
     dim_head: 32
+    dropout: 0.0 # only applied during normal attention model (i.e when W and max_keep_keys are -1)
     
 
   very_small_transformer:
