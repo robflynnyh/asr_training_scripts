@@ -51,6 +51,14 @@ def main(args):
     modeltype = config['model']['modeltype']
     model.to(device)
     model.eval()
+
+    '''
+    # enable dropout
+    for m in model.modules():
+        if m.__class__.__name__.startswith('Dropout'):
+            m.train()
+    '''
+    
     print('Model Loaded')
     print(f'Model type: {modeltype}. Epoch: {epoch}. Val loss: {val_loss}')
 
