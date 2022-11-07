@@ -191,12 +191,16 @@ class SequenceMaskingAttention(nn.Module):
         if not standard_attention:
             q, k, v = qkv
             # get a random sequence of zero or ones that is a quarter of the sequence length
-            seq_mask = torch.randint(0, 100, (B, H, max(N // 4,1)), device=x.device, dtype=torch.int8) < (self.sequence_dropout * 100)
+            seq_mask = torch.randint(0, 100, (B, H, max(N // 4,1)), device=x.device, dtype=torch.int8) #< (self.sequence_dropout * 100)
+            #masking_probs = torch.randint(0, min(100, int(self.sequence_dropout*100*2)), (B, H), device=x.device, dtype=torch.int8).unsqueeze(-1)
+            masking_probs = self.sequence_dropout * 100
+            seq_mask = seq_mask < masking_probs
+            
             seq_mask = seq_mask.repeat_interleave(5, dim=-1)[..., :N] # repeat the mask to be the same length as the sequence
             
             if seq_mask.shape[-1] != N:
                 diff = N - seq_mask.shape[-1]
-                pad_seq = torch.randint(0, 100, (B, H, diff), device=x.device, dtype=torch.int8) < (self.sequence_dropout * 100)
+                pad_seq = torch.randint(0, 100, (B, H, diff), device=x.device, dtype=torch.int8) < masking_probs
                 seq_mask = torch.cat((seq_mask, pad_seq), dim=-1)
 
 
@@ -410,7 +414,8 @@ class MyopicAttention(nn.Module):
         query, key, value = qkv
         dots = torch.einsum('bhid,bhjd->bhij', query, key) * self.scale
         dots += pos_fn(dots.shape[-1], device=dots.device, dtype=dots.dtype)
-        attn_mask = rearrange(mask, "b n -> b () n ()") * rearrange(mask, "b n -> b () () n")
+        qkmask = ~mask
+        attn_mask = ~(rearrange(qkmask, "b n -> b () n ()") * rearrange(qkmask, "b n -> b () () n"))
     
         if self.causal: # create a regular causal mask
             causal_mask = torch.ones(dots.shape[-2], dots.shape[-1], device=dots.device).triu(1).bool()
@@ -490,8 +495,8 @@ class MyopicAttention(nn.Module):
             pos_bias = pos_bias.gather(-1, keep_indices)
             
             dots = dots + pos_bias
-
-            qk_mask = rearrange(q_mask, "b h n w -> b h n w ()") * rearrange(kv_mask, "b h w n -> b h w () n")
+            
+            qk_mask = ~(rearrange(~q_mask, "b h n w -> b h n w ()") * rearrange(~kv_mask, "b h w n -> b h w () n")) # logical or
 
             if self.causal:
                 causal_mask = keep_indices > rearrange(torch.arange(0, N, device=q.device), "(nw w) -> nw w ()", w=W, nw=NW)
@@ -920,7 +925,7 @@ class LearnableMyopicAttention(nn.Module):
             
             dots = dots + pos_bias
 
-            qk_mask = rearrange(q_mask, "b h n w -> b h n w ()") * rearrange(kv_mask, "b h w n -> b h w () n")
+            qk_mask = rearrange(q_mask, "b h n w -> b h n w ()") * rearrange(kv_mask, "b h w n -> b h w () n") # FUKING PADDING MASK
 
             if self.causal:
                 causal_mask = keep_indices > rearrange(torch.arange(0, N, device=q.device), "(nw w) -> nw w ()", w=W, nw=NW)
