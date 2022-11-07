@@ -113,7 +113,19 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
 
     return  sum(losses) / len(losses)
 
+def intermediate_loss(loss_fn, model_out, targets):
+    if isinstance(model_out, dict) == False:
+        return model_out, None
+    out, interim_logits = model_out['out'], model_out['interim_logits']
+    if model_out['interim_logits'] == None or isinstance(model_out['interim_logits'], list):
+        return out, None
 
+    interims = torch.empty(interim_logits.shape[0], device=out.device)
+    for i in range(interim_logits.shape[0]):
+        interims[i] = loss_fn(interim_logits[i], targets)
+    
+    return out, torch.mean(interims)
+    
 
 def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=None, ema=None):
     model.train()
@@ -124,6 +136,7 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
     pbar = tqdm(train_dataloader, total=len(train_dataloader))
     autocast_device = 'cuda' if torch.cuda.is_available() else 'cpu' # for autocast if using mixed precision
 
+    loss_fn = lambda logits, targets: loss_ce(logits=logits, labels=targets, ignore_index=-100)
     #torch.autograd.set_detect_anomaly(True)
 
     for i, batch in enumerate(pbar):
@@ -132,12 +145,12 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
         token_lens += 1 # for <bos> and <eos>
         tokens = add_bos(tokens, bos_token_id=0)
         targets = tokens.clone()
-        targets[:, :-1] = tokens[:, 1:]
-        targets = add_eos(targets, eos_id=0, token_lens=token_lens)
+        targets[:, :-1] = tokens[:, 1:] # shift right
+        targets = add_eos(targets, eos_id=0, token_lens=token_lens) # add <eos> to the end of each sequence
 
         with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
-            mask = token_lens_to_mask(token_lens)
-            targets = mark_padding(targets, mask, pad_id=-100)
+            mask = token_lens_to_mask(token_lens) 
+            targets = mark_padding(targets, mask, pad_id=-100) 
 
             model_args = {'x': tokens, 'mask': mask} if isfalse(callable(getattr(model, 'get_args', False))) \
                 else model.get_args(tokens=tokens, mask=mask, lengths=token_lens)
@@ -147,7 +160,12 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
             if callable(getattr(model, 'process_labels', None)):
                 targets = model.process_labels(targets)
 
-            loss_a = loss_ce(logits=model_out, labels=targets, ignore_index=-100)
+            model_out, interim_loss = intermediate_loss(loss_fn, model_out, targets)
+            
+            loss_a = loss_fn(logits=model_out, targets=targets)
+            
+            loss_a = loss_a if not exists(interim_loss) else INTERPOLATE * interim_loss + (1 - INTERPOLATE) * loss_a
+        
             loss_a = loss_a / args.accumulate_gradients
 
             loss_iterim.append(loss_a.item())
@@ -347,7 +365,7 @@ if __name__ == '__main__':
     parser.add_argument('--no_load_optim', action='store_true', help='if set, will not load optimizer state from checkpoint')
 
     parser.add_argument('--clip_gradients', action='store_true')
-    parser.add_argument('--clip_gradients_value', type=float, default=5.0)
+    parser.add_argument('--clip_gradients_value', type=float, default=10.0)
 
     parser.add_argument('--micro_batch_duration', type=int, default=45, help='batch size for non-i.i.d micro batches')
     parser.add_argument('--micro_batch_number', type=int, default=1, help='number of i.i.d micro batches per mini-batch')

@@ -1,12 +1,21 @@
 
-name: "Megatron-GPT"
-
 model:
   tokenizer:
     dir: "./tokenizer_spe_bpe_v128/" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
     type: bpe  # has to be bpe (u have no choice)
   
-  modeltype: myopic_test
+  modeltype: qknorm_test
+
+  qknorm_test:
+    d_model: 256
+    n_layers: 12
+    n_heads: 8
+    dim_head: 32
+    dropout: 0.5
+    temperature: 15.5
+    kwargs:
+      ff_mult: 4
+
 
   myopic_test:
     d_model: 256
@@ -15,8 +24,17 @@ model:
     n_layers: 12
     n_heads: 8
     dim_head: 32
-    dropout: 0.1
-    
+    dropout: 0.25
+
+
+  gau_qknorm_test:
+    d_model: 256
+    n_layers: 20
+    n_heads: 2
+    dim_head: 42
+    dropout: 0.5
+    temperature: 15.5
+
 
   very_small_transformer:
     d_model: 128

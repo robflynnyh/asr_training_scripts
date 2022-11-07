@@ -191,66 +191,14 @@ class S4adapter(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
         self.s4config = s4config
 
-        self.network = nn.ModuleList()
-        for i in range(n_layers):
-            self.network.append(
-                nn.ModuleList([
-                    S4(**s4config),
-                    self.GatedLinearUnit(s4config['d_model']),
-                    nn.LayerNorm(s4config['d_model'])
-                ])
-            )
-        self.network.append(self.predict)
-
-    @staticmethod
-    def GatedLinearUnit(d_model):
-        return nn.Sequential(
-            nn.Dropout(0.1),
-            nn.Linear(d_model, d_model*2),
-            nn.GELU(),
-            nn.Linear(d_model*2, d_model)
-        )
-
     def get_args(self, tokens, mask, lengths):
         return {'tokens': tokens,'mask': mask,'lengths': lengths,}
 
     def greedy_generate(self, text, tokenizer, num_steps=10, device='cpu', temperature=0.0):
-        raise NotImplementedError
-        self.to(device)
-        self.eval()
-        
-        tokens = tokenizer.text_to_ids(text)
-        tokens = torch.tensor(tokens, device=device).unsqueeze(0)
-        x = self.embedding(tokens)
-        x, state = None, None#self.model(u=x)
-        posterior = self.softmax(self.predict(x)[0, -1, 1:])
-        next_token = do_sample(posterior, temperature=temperature) + 1 # add 1 to account for <pad>
-
-        tokens = torch.cat([tokens, next_token.unsqueeze(0).unsqueeze(0)], dim=1)
-        for _ in range(num_steps):
-            x = self.embedding(tokens)
-            x, state = self.model(u=x, state=state)
-            posterior = self.softmax(self.predict(x)[0, -1, 1:])
-            next_token = do_sample(posterior, temperature=temperature) + 1    
-            tokens = torch.cat([tokens, next_token.unsqueeze(0).unsqueeze(0)], dim=1)
-        return tokenizer.ids_to_text(tokens[0].tolist())    
+        raise NotImplementedError  
 
     def _forward(self, u, lengths, return_states=False, states=None):
-        model_states_dict = {}
-        x = u
-        for i, (s4, gl, ln) in enumerate(self.network[:-1]):
-            #if self.training:
-            x = x - latent
-            state = None if states is None else states[i]
-            x_out, state = s4(u=x, lengths=lengths, state=state)
-            x = x_out + x * 0.5
-            model_states_dict[i] = state.detach() if return_states else None
-            x = gl(x) + x * 0.5
-            x = ln(x)
-
-        logits = self.network[-1](x)
-        return logits if isfalse(return_states) else (logits, model_states_dict)
-    
+        pass
 
     def forward(self, tokens, mask=None, lengths=None):
         x = self.embedding(tokens)
@@ -294,6 +242,25 @@ def load_model(config:OmegaConf, tokenizer, max_len:int=None):
             dim_head = modelconfig.get('dim_head', 32),
             causal=True,
             dropout= modelconfig.get('dropout', 0.0),
+        )
+        
+    elif 'qknorm' in mtype:
+        if 'gau' in mtype:
+            from lm.gau_qknorm_attention import transformer_lm
+        else:
+            from lm.qknorm_attention import transformer_lm
+        assert mtype in modelconfig
+        modelconfig = modelconfig[mtype]
+        model = transformer_lm(
+            dim = modelconfig.get('d_model', 256),
+            vocab_size=tokenizer.vocab_size,
+            depth = modelconfig.get('n_layers', 12),
+            heads = modelconfig.get('n_heads', 8),
+            dim_head = modelconfig.get('dim_head', 32),
+            causal=True,
+            dropout= modelconfig.get('dropout', 0.0),
+            temperature= modelconfig.get('temperature', 15.5),
+            **modelconfig.get('kwargs', {})
         )
 
     elif mtype == 'perceiverAR':

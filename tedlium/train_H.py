@@ -344,7 +344,7 @@ if __name__ == '__main__':
     parser.add_argument('--no_load_optim', action='store_true', help='if set, will not load optimizer state from checkpoint')
 
     parser.add_argument('--clip_gradients', action='store_true')
-    parser.add_argument('--clip_gradients_value', type=float, default=5.0)
+    parser.add_argument('--clip_gradients_value', type=float, default=10.0)
 
     parser.add_argument('--micro_batch_duration', type=int, default=45, help='batch size for non-i.i.d micro batches')
     parser.add_argument('--micro_batch_number', type=int, default=1, help='number of i.i.d micro batches per mini-batch')
