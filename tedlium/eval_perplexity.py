@@ -46,6 +46,8 @@ def main(args):
     tokenizer_path = os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
     tokenizer = tools.load_tokenizer(tokenizer_path)
 
+    wordlevel = False if args.token_level else True
+
     model = lm_utils.load_model(config, tokenizer, max_len=args.max_len)
     epoch, val_loss  = model_utils.load_checkpoint(args=argsclass(**{'checkpoint': args.checkpoint}), model=model, force_cpu=True)
     modeltype = config['model']['modeltype']
@@ -77,7 +79,7 @@ def main(args):
             text_only=True,
             max_allowed_utterance_gap=args.max_allowed_utterance_gap
         )
-        ppl, avg_len = lm_utils.eval_corpus_perplexity(model, dl, device=device)
+        ppl, avg_len = lm_utils.eval_corpus_perplexity(model, dl, device=device, word_level=wordlevel)
         print(f"Duration: {duration}, PPL: {ppl}, Avg Len: {avg_len}")
 
 
@@ -91,6 +93,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, default='auto')
     parser.add_argument('--max_gpu_duration', type=float, default=-1)
     parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=3.0, help='max allowed gap between utterances in seconds')
+    parser.add_argument('--token_level', action='store_true')
 
     parser.add_argument('--checkpoint', type=str, default='')
     args = parser.parse_args()

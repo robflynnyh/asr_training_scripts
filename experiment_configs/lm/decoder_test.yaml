@@ -1,4 +1,6 @@
 
+dataset: 'AMI_DEFAULT'
+
 model:
   tokenizer:
     dir: "./tokenizer_spe_bpe_v128/" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
