@@ -1,24 +1,10 @@
 
-dataset: 'AMI'
-
 model:
   tokenizer:
-    dir: "./ami/tokenizers/tokenizer_spe_bpe_v8000" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
+    dir: "./tokenizer_spe_bpe_v128/" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
     type: bpe  # has to be bpe (u have no choice)
   
-  modeltype: qknorm_ami
-
-  qknorm_ami:
-    d_model: 256
-    n_layers: 12
-    n_heads: 8
-    dim_head: 32
-    dropout: 0.5
-    temperature: 15.5
-    kwargs:
-      ff_mult: 4
-      tie_embedding: false
-
+  modeltype: qknorm_test_hierarchy
 
   qknorm_test:
     d_model: 256
@@ -29,7 +15,6 @@ model:
     temperature: 15.5
     kwargs:
       ff_mult: 4
-      tie_embedding: True
 
 
   qknorm_test_hierarchy:
