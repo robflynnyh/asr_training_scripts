@@ -214,8 +214,12 @@ def main(args):
     config = load_config(args.model_config)
     assert 'dataset' in config, 'please add a dataset name to the config, and specify the path in the .env file'
     dataset = config['dataset']
-    ami_dict = tools.load_corpus(tools.request_env(dataset)) #
 
+    ami_dict = tools.load_corpus(
+        target_folder = tools.request_env(dataset+'_PATH'),
+        prefix_path = tools.request_env(dataset+'_BASE'),
+        file_name = tools.request_env(dataset+'_NAME')
+    ) 
     
     tokenizer_path = config['model']['tokenizer']['dir']
     tokenizer = tools.load_tokenizer(model_path=join(tokenizer_path, 'tokenizer.model'))
@@ -276,7 +280,7 @@ def main(args):
     scaler = GradScaler() if args.mixed_precision else None
 
     if args.wandb:
-        wandb.init(project="deliberation-LM", config=args) if args.wandb_id == '' else wandb.init(project="deliberation-LM", id=args.wandb_id, resume="must", config=args)
+        wandb.init(project=args.project_name, config=args) if args.wandb_id == '' else wandb.init(project=args.project_name, id=args.wandb_id, resume="must", config=args)
         wandb.watch(model, log="all")
         wandb.config.update({'total_params': total_params})
         print(f'\nLoggging with Wandb id: {wandb.run.id}\n')

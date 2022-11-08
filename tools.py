@@ -67,6 +67,7 @@ def request_env(env_name:str):
     assert env_name in envs, f'{env_name} not found in .env file'
     return envs[env_name]
 
+
 def check_exists(path:str):
     assert os.path.exists(path), f'{path} does not exist'
 
@@ -215,12 +216,17 @@ def transform_txt(txt:str) -> str:
     return txt
 
 
-def load_corpus(target_folder:str=request_env('TED_DEFAULT'), prefix_path=request_env('DATA_HOME'), transform:bool=True) -> Dict[str, CutSet]:
+def load_corpus(
+        target_folder:str=request_env('TED_PATH'), 
+        prefix_path=request_env('TED_BASE'),
+        file_name=request_env('TED_NAME'), 
+        transform:bool=True
+    ) -> Dict[str, CutSet]:
     ds = {}
     for split in ['train', 'dev', 'test']:
-        cuts = CutSet.from_file(os.path.join(target_folder, f'tedlium_cuts_{split}.jsonl.gz'))
+        cuts = CutSet.from_file(os.path.join(target_folder, f'{file_name}_cuts_{split}.jsonl.gz'))
         ds[split] = cuts.with_recording_path_prefix(prefix_path)
-        if transform_txt:
+        if transform:
             ds[split] = ds[split].transform_text(transform_txt)
     return ds   
 
