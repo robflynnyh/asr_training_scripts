@@ -90,10 +90,13 @@ def eval_corpus_perplexity(model, dataloader, device, word_level=False):
     text_lens = []
     for batch in pbar:
         b_text = batch['text']
-        b_text_lens = [len(t.split()) + 1 for t in b_text] # + 1 for <eos> !
+        #print(b_text)
+        b_text_lens = [len(t.split()) + 1  for t in b_text] # + 1 for <eos> ! split() ignores whitespaces which is what we want
         text_lens.extend(b_text_lens)
         
+
         tokens, token_lens = batch_to_device(batch, device)
+
         cur_loss = eval_perplexity(model, tokens, token_lens, return_ppl=False)
         losses.append(cur_loss)
         all_token_lens.append(token_lens)
@@ -101,6 +104,7 @@ def eval_corpus_perplexity(model, dataloader, device, word_level=False):
 
     all_token_lens = torch.cat(all_token_lens).cpu()
     avg_token_lens = all_token_lens.reshape(-1).float().mean()
+ 
     losses = torch.cat(losses)
     avg_loss = losses.reshape(-1).float().mean()
     text_lens = torch.tensor(text_lens)
@@ -108,10 +112,8 @@ def eval_corpus_perplexity(model, dataloader, device, word_level=False):
     if not word_level:
         ppl = torch.exp(avg_loss) 
     else:
-        ppl = (losses * all_token_lens) / text_lens
-        ppl = torch.exp(ppl.mean())
-        
-        
+        ppl = (losses * (all_token_lens+1)) / text_lens # +1 for <eos> !
+        ppl = torch.exp(ppl.mean())        
 
     return ppl, avg_token_lens.item()
 

@@ -1,10 +1,10 @@
 
 model:
   tokenizer:
-    dir: "./tokenizer_spe_bpe_v128/" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
+    dir: "./ami/tokenizers/tokenizer_spe_bpe_v8000/" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
     type: bpe  # has to be bpe (u have no choice)
   
-  modeltype: qknorm_test_hierarchy
+  modeltype: qknorm_test
 
   qknorm_test:
     d_model: 256

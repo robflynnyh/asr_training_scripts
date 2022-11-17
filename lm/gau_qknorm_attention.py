@@ -5,6 +5,40 @@ from torch import einsum
 from torch.utils.checkpoint import checkpoint # # gradient/activation checkpointing
 from functools import partial
 
+def exists(val):
+    return val is not None
+
+# token shifting
+# lucidrains implementation: https://github.com/lucidrains/x-transformers/blob/main/x_transformers/x_transformers.py
+# BlinkDL idea from RWKV-LM https://github.com/BlinkDL/RWKV-LM
+def shift(t, amount, mask = None):
+    if amount == 0:
+        return t
+    else:
+        amount = min(amount, t.shape[1])
+
+    if exists(mask):
+        t = t.masked_fill(~mask[..., None], 0.)
+
+    return F.pad(t, (0, 0, amount, -amount), value = 0.)
+
+class ShiftTokens(nn.Module):
+    def __init__(self, shifts, fn):
+        super().__init__()
+        self.fn = fn
+        self.shifts = tuple(shifts)
+
+    def forward(self, x, **kwargs):
+        mask = kwargs.get('mask', None)
+        shifts = self.shifts
+        segments = len(shifts)
+        feats_per_shift = x.shape[-1] // segments
+        splitted = x.split(feats_per_shift, dim = -1)
+        segments_to_shift, rest = splitted[:segments], splitted[segments:]
+        segments_to_shift = list(map(lambda args: shift(*args, mask = mask), zip(segments_to_shift, shifts)))
+        x = torch.cat((*segments_to_shift, *rest), dim = -1)
+        return self.fn(x, **kwargs)
+
 
 class DynamicPositionBias(nn.Module):
     '''taken From Phil Wang's x-transformers library'''
@@ -53,109 +87,132 @@ class DynamicPositionBias(nn.Module):
         bias = rearrange(bias, 'i j h -> h i j')
         return bias
 
+class ScaledSinuEmbedding(nn.Module):
+    '''taken From Phil Wang's x-transformers library'''
+    def __init__(self, dim):
+        super().__init__()
+        self.scale = nn.Parameter(torch.ones(1,))
+        inv_freq = 1. / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer('inv_freq', inv_freq)
+
+    def forward(self, x):
+        n, device = x.shape[1], x.device
+        t = torch.arange(n, device = device).type_as(self.inv_freq)
+        sinu = einsum('i , j -> i j', t, self.inv_freq)
+        emb = torch.cat((sinu.sin(), sinu.cos()), dim = -1)
+        return emb * self.scale
+
 class ReLUSquared(nn.Module):
     def forward(self, x):
         return torch.pow(F.relu(x), 2)
 
-def l2norm(x, dim = -1):
-    return F.normalize(x, p = 2, dim = dim)
+def l2norm(t, groups = 1, dim = -1):
+    if groups == 1:
+        return F.normalize(t, p = 2, dim = dim)
+    t = rearrange(t, '... (g d) -> ... g d', g = groups)
+    t = F.normalize(t, p = 2, dim = dim)
+    return rearrange(t, '... g d -> ... (g d)')
 
-
-'''
-uses code from Phil Wang's implementation. 
-https://github.com/lucidrains/FLASH-pytorch/blob/main/flash_pytorch/flash_pytorch.py
-
-Paper: https://arxiv.org/pdf/2202.10447.pdf
-
-though this is slightly different, I remove the offset scale, as I am using l2 norm for q and k
-and I keep softmax with the learnt temperature rather than relu squeared
-I will test the proper implementation later but I think this will be better
-'''
-
-class CosineGatedAttentionUnit(nn.Module):
+class CosineMoSGAU(nn.Module):
     def __init__(
         self,
         n_feats,
         head_dim,
-        n_heads = 1,
+        n_heads,
         dropout=0.1,
         bias=False,
         temperature=15.5,
         return_attention=False,
         causal=False,
         activation='softmax',
-        expansion_factor=2,
-        **kwargs
-    ):
+        **kwargs):
+
         super().__init__()
         assert activation in ['relusq', 'softmax']
-        self.n_feats = n_feats
-        self.head_dim = head_dim
-        self.n_heads = n_heads
+        ff_mult = kwargs.get('ff_mult', 4)
+        
+
+        self.n_feats, self.head_dim, self.n_heads = n_feats, head_dim, 1
         self.dropout = nn.Dropout(dropout)
         self.bias = bias
         self.return_attention = return_attention
-
-        self.expansion_factor = expansion_factor
-
-        self.norm = nn.LayerNorm(n_feats)
-        
-        self.to_vgate = nn.Sequential(nn.Linear(n_feats, n_feats * expansion_factor * 2), nn.SiLU())
-        self.to_query_key = nn.Sequential(nn.Linear(n_feats, head_dim * n_heads * 2), nn.SiLU())
-        self.out_projection = nn.Linear(n_feats * expansion_factor, n_feats)
-
         self.causal = causal
 
-        self.temperature = torch.nn.Parameter(torch.tensor(temperature), requires_grad=True) if isinstance(temperature, float) else temperature
+      
+        self.pre_head_proj = nn.Conv2d(n_heads, n_heads, (1, 1), padding='same')
 
-        self.activation_type = activation
+
+        self.temperature = temperature
+
         self.activation = ReLUSquared() if activation == 'relusq' else nn.Softmax(dim=-1)
+        
+        self.to_qk = nn.Sequential(
+            nn.Linear(n_feats, head_dim * 2, bias=bias),
+            nn.SiLU(),
+        )
 
-        self.to_out = nn.Sequential(nn.Linear(n_feats * expansion_factor, n_feats), nn.Dropout(0.1))
+        self.to_hidden = nn.Sequential(
+            nn.Linear(n_feats, n_feats * ff_mult, bias=bias),
+            nn.SiLU()
+        )
+        self.to_v = nn.Sequential(
+            nn.Linear(n_feats, head_dim * ff_mult, bias=bias),
+            nn.SiLU()
+        )
+        self.out_proj = nn.Sequential(
+            nn.Linear(n_feats * ff_mult, n_feats, bias=bias),
+            nn.Dropout(0.1)
+        )
 
-    
-
-
-    def forward(self, x, pos_fn, mask=None):
+    def forward(self, x, pos_fn, mask):
         assert pos_fn is not None, 'pls provide a position function'
         B, N, C, H, D = *x.shape, self.n_heads, self.head_dim
+        pop_head = lambda x: rearrange(x, 'b n d -> b () n d')
+        #print(x.shape, mask.shape)
+
         if mask is None:
             mask = torch.zeros(B, N, device=x.device, dtype=torch.bool)
 
-        x = self.norm(x)
+        q, k = pop_head(self.to_qk(x)).chunk(2, dim=-1)
+        v = pop_head(self.to_v(x))
+        gate = self.to_hidden(x)
 
-        v, gate = self.to_vgate(x).chunk(2, dim=-1)
-     
-        v = rearrange(v, 'b n (h d) -> b h n d', h=H)
-     
+        out = self.attend(q, k, v, mask, pos_fn)
+        out = rearrange(out, "b h n d -> b n (h d)")
+        out = out * gate
 
-        q, k = rearrange(self.to_query_key(x), 'b n (h d) -> b h n d', h=H).chunk(2, dim=-1)
-        q, k = map(l2norm, (q, k)) # qk norm attention
+        out = self.out_proj(out)
+        return out
 
-        dots = einsum('bhid,bhjd->bhij', q, k) * self.temperature
+    def attend(self, query, key, value, mask, pos_fn):
+        query, key = map(l2norm, (query, key))
+
+        dots = einsum('bhid,bhjd->bhij', query, key) * self.temperature
+        dots = self.pre_head_proj(dots)
+
         dots += pos_fn(dots.shape[-1], device=dots.device, dtype=dots.dtype)
-
         qkmask = ~mask
         attn_mask = ~(rearrange(qkmask, "b n -> b () n ()") * rearrange(qkmask, "b n -> b () () n"))
 
         if self.causal: # create a regular causal mask
-            causal_mask = torch.ones(dots.shape[-2], dots.shape[-1], device=dots.device, dtype=torch.bool).triu(1)
+            causal_mask = torch.ones(dots.shape[-2], dots.shape[-1], device=dots.device).triu(1).bool()
             attn_mask = torch.logical_or(attn_mask, causal_mask)
-
-        dots.masked_fill_(attn_mask, -torch.finfo(dots.dtype).max)
-
-        attn = self.activation(dots) 
-
-    
-        out = einsum("bhij,bhjd->bhid", attn, v)
-      
-        out = rearrange(out, 'b h n d -> b n (h d)')
-
-        out = out * gate
-
-        out = self.to_out(out)
         
-        return out
+        dots.masked_fill_(attn_mask, -torch.finfo(dots.dtype).max)
+    
+        attn = self.activation(dots)
+        attn = self.dropout(attn)
+        return einsum("bhij,bhjd->bhid", attn, value)
+
+
+class PreNorm(nn.Module):
+    def __init__(self, dim, fn):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.fn = fn
+
+    def forward(self, x, *args, **kwargs):
+        return self.fn(self.norm(x), *args, **kwargs)
 
 
 
@@ -168,18 +225,19 @@ class transformer(nn.Module):
             dim_head, 
             causal=True,
             temperature=15.5,
-            shared_temperture=False,
             intermediate_loss=True,
             dropout = 0.1,
-            checkpoint = False,
             **kwargs
         ):
         super().__init__()
         if depth == 1:
             intermediate_loss = False
 
-     
-        self.temperature = nn.Parameter(torch.tensor(temperature), requires_grad=True) if shared_temperture else temperature
+        self.checkpoint_every_n = kwargs.get('checkpoint_every_n', 0)
+
+        self.token_shift = kwargs.get('token_shift', False)
+      
+        self.temperature = nn.Parameter(torch.ones(1, heads, 1, 1) * temperature + torch.randn(1, heads, 1, 1) * 5, requires_grad=True)
 
         self.intermediate_loss = intermediate_loss
 
@@ -192,11 +250,15 @@ class transformer(nn.Module):
             norm = False
         )
 
-        self.grad_checkpointing = checkpoint
+        self.token_shifter = lambda x: x
+        if self.token_shift:
+            self.token_shifter = ShiftTokens(range(0, 2), nn.Identity())
+        self.token_shift = lambda x: self.token_shifter(x)
+
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(
-                CosineGatedAttentionUnit(
+                PreNorm(dim, CosineMoSGAU(
                     dim, 
                     n_heads=heads, 
                     head_dim=dim_head, 
@@ -204,8 +266,10 @@ class transformer(nn.Module):
                     temperature=self.temperature,
                     dropout=dropout,
                     **kwargs
-                ),
+                ))
             )
+
+
 
     @staticmethod
     def create_custom_forward(module):
@@ -214,24 +278,37 @@ class transformer(nn.Module):
         return custom_forward
 
     def checkpoint(self, layer, module, *args, **kwargs):
-        condition = self.training and self.grad_checkpointing and layer < self.depth - 1
+        condition = self.training and self.checkpoint_every_n != 0 and layer < self.depth - 1 and layer % self.checkpoint_every_n == 0
         return checkpoint(self.create_custom_forward(module), *args, **kwargs) if condition else module(*args, **kwargs)
 
     def forward(self, x, mask=None, self_condtioning=None):
         intermediate_logits = []
-        for i, attn in enumerate(self.layers):
-            #x = attn(x, self.positional_bias, mask=mask) 
+        for i, (attn) in enumerate(self.layers):
+        
+            x = self.token_shift(x)
             x = self.checkpoint(i, attn, x, self.positional_bias, mask) + x
-            
+
             if i < self.depth - 1 and self_condtioning is not None:
                 x, logits = self_condtioning(x)
                 intermediate_logits.append(logits)
 
-        # stack intermediate logits
-        if len(intermediate_logits) > 0:
-            intermediate_logits = torch.stack(intermediate_logits, dim=0) # D x B x N x V
-
+        if len(intermediate_logits) > 0: # stack intermediate logits
+            intermediate_logits = torch.stack(intermediate_logits, dim=0) # D x B x N x L
+    
         return x, intermediate_logits
+
+class shared_embedding_output_layer(nn.Module):
+    '''Pass a embedding layer and then use this module as the output layer'''
+    def __init__(self, embedding_layer, bias=False):
+        super().__init__()
+        self.embedding_layer = embedding_layer
+        self.use_bias = bias
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(embedding_layer.weight.shape[0]))#
+            nn.init.xavier_uniform_(self.bias)
+
+    def forward(self, x):
+        return F.linear(x, weight=self.embedding_layer.weight, bias=self.bias if self.use_bias else None)
 
 
 class transformer_lm(nn.Module):
@@ -248,6 +325,7 @@ class transformer_lm(nn.Module):
         shared_temperture=True,
         self_conditioning=False,
         intermediate_loss=True,
+        use_abs_pos=False,
         **kwargs
     ):
         super().__init__()
@@ -257,6 +335,10 @@ class transformer_lm(nn.Module):
         self.self_conditioning = True if self_conditioning else None
         self.intermediate_loss = intermediate_loss
 
+        self.use_abs_pos = use_abs_pos
+        if self.use_abs_pos:
+            self.abs_pos_fn = ScaledSinuEmbedding(dim=dim)
+        self.abs_pos = lambda x: x + self.abs_pos_fn(x) if self.use_abs_pos else x
 
         if self_conditioning:
             self.reprojection_layer = nn.Linear(vocab_size, dim)
@@ -273,27 +355,31 @@ class transformer_lm(nn.Module):
             intermediate_loss = intermediate_loss,
             **kwargs
         )
+
+        self.tie_embedding = kwargs.get('tie_embedding', False)
+        print('Tie embedding:', self.tie_embedding) if self.tie_embedding else None
  
-        self.to_logits = nn.Linear(dim, vocab_size)
         self.embedding = nn.Embedding(vocab_size, dim)
+        self.to_logits = shared_embedding_output_layer(self.embedding) if self.tie_embedding else nn.Linear(dim, vocab_size)
+        
+
         self.post_norm = nn.LayerNorm(dim)
+
 
     def self_condition_fn(self):
         def self_condition(x):
             logits = self.to_logits(self.post_norm(x))
-            if self.self_conditioning:
+            if self.self_conditioning: # not effective for LMs (intermediate loss is tho)
                 z = F.softmax(logits, dim=-1)
                 z = self.reprojection_layer(z)
                 x = z + x
             return x, logits
-        if (self.self_conditioning or self.intermediate_loss) and self.training:
-            return self_condition
-        else:
-            return None
+        return self_condition if (self.self_conditioning or self.intermediate_loss) and self.training else None
 
 
     def forward(self, x, mask=None):
         x = self.embedding(x)
+        x = self.abs_pos(x)
         x, interim_logits = self.layers(x, mask=~mask if mask is not None else None, self_condtioning=self.self_condition_fn())
         x = self.post_norm(x)
         x = self.to_logits(x)

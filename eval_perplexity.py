@@ -29,6 +29,14 @@ durations = [
     200.0,
     250.0,
     300.0,
+    400.0,
+    500.0,
+    600.0,
+    700.0,
+    800.0,
+    1000.0,
+    1250.0,
+    1500.0
 ]
 
 class argsclass:
@@ -38,20 +46,18 @@ class argsclass:
 
 def main(args):
     device = torch.device(args.device)
-    tk = tools.load_tokenizer()
-    tokenizer = tk
-    
-    dataset = args.dataset
+
+   
+    config = lm_utils.load_config(args.config)
+    tokenizer_path = os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
+    tokenizer = tools.load_tokenizer(tokenizer_path)
+
+    dataset = config['dataset']
     corpus = tools.load_corpus(
         target_folder = tools.request_env(dataset+'_PATH'),
         prefix_path = tools.request_env(dataset+'_BASE'),
         file_name = tools.request_env(dataset+'_NAME')
     ) 
-
-    partition = niiddl.prepare_partition(corpus['train'])
-    config = lm_utils.load_config(args.config)
-    tokenizer_path = os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
-    tokenizer = tools.load_tokenizer(tokenizer_path)
 
     wordlevel = False if args.token_level else True
 
@@ -61,13 +67,7 @@ def main(args):
     model.to(device)
     model.eval()
 
-    '''
-    # enable dropout
-    for m in model.modules():
-        if m.__class__.__name__.startswith('Dropout'):
-            m.train()
-    '''
-    
+
     print('Model Loaded')
     print(f'Model type: {modeltype}. Epoch: {epoch}. Val loss: {val_loss}')
 
@@ -78,13 +78,14 @@ def main(args):
             torch.cuda.empty_cache() 
 
         dl = niiddl.get_data_loader(
-            corpus['test'], 
+            corpus[args.split],
             tokenizer=tokenizer, 
             batch_size=args.batch_size, 
             shuffle=False,
             max_duration=duration,
             text_only=True,
-            max_allowed_utterance_gap=args.max_allowed_utterance_gap
+            max_allowed_utterance_gap=args.max_allowed_utterance_gap,
+            split_speakers=True
         )
         ppl, avg_len = lm_utils.eval_corpus_perplexity(model, dl, device=device, word_level=wordlevel)
         print(f"Duration: {duration}, PPL: {ppl}, Avg Len: {avg_len}")
@@ -93,7 +94,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='./lm/decoder_test.yaml')
+    parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml')
     
     parser.add_argument('--max_len', type=int, default=1862)
     parser.add_argument('--batch_size', type=int, default=10)
@@ -101,8 +102,8 @@ if __name__ == '__main__':
     parser.add_argument('--max_gpu_duration', type=float, default=-1)
     parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=3.0, help='max allowed gap between utterances in seconds')
     parser.add_argument('--token_level', action='store_true')
-    parser.add_argument('--dataset', type=str, default='AMI')
-
+    parser.add_argument('--split', type=str, default='test')
+    
     parser.add_argument('--checkpoint', type=str, default='')
     args = parser.parse_args()
 

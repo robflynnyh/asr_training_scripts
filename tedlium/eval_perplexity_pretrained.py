@@ -13,7 +13,8 @@ import non_iid_dataloader as niiddl
 import lm_utils
 import os 
 import numpy as np
-from transformers import GPT2Tokenizer, GPT2LMHeadModel
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
 import non_iid_dataloader as niiddl
 
 durations = [
@@ -27,7 +28,8 @@ durations = [
     120.0,
     140.0,
     180.0,
-    200.0
+    200.0,
+    250.0,
 ]
 
 class argsclass:
@@ -39,9 +41,9 @@ class argsclass:
 @torch.no_grad()
 def main(args):
     device = torch.device(args.device)
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    tokenizer = AutoTokenizer.from_pretrained('facebook/opt-125m')
     corpus = tools.load_corpus()
-    model = GPT2LMHeadModel.from_pretrained('gpt2')
+    model = AutoModelForCausalLM.from_pretrained('facebook/opt-125m')
     model.to(device)
     model.eval()
 
@@ -72,6 +74,7 @@ def main(args):
 
         losses = 0
         ttl_tokens = 0
+        ttl_words = 0
 
         for text_sample in tqdm(samples):
             input_ids = tokenizer(text_sample, return_tensors='pt')
@@ -87,11 +90,16 @@ def main(args):
             loss = loss.view(shift_labels.size())
             losses += loss.sum().item()
             #print(token_lens)
-            ttl_tokens += token_lens
+            ttl_tokens += token_lens 
+            ttl_words += len(text_sample.split()) +1 # for the eos token
 
-        ppl = torch.exp(torch.tensor(losses / ttl_tokens))
+        if args.token_level:
+            ppl = torch.exp(torch.tensor(losses / ttl_tokens))
+        else:
+            ppl = torch.exp(torch.tensor(losses / ttl_words))
         avg_token_len = ttl_tokens / len(samples)
-        print(f'avg_token_len: {avg_token_len}')
+        avg_word_len = ttl_words / len(samples)
+        print(f'avg_token_len: {avg_token_len}, avg_word_len: {avg_word_len}')
         print(f'perplexity for duration {duration} is {ppl}')
 
 
@@ -99,7 +107,6 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='./lm/decoder_test.yaml')
     parser.add_argument('--split', type=str, default='test')
     parser.add_argument('--max_len', type=int, default=1862)
     parser.add_argument('--batch_size', type=int, default=10)
@@ -107,6 +114,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_gpu_duration', type=float, default=-1)
     parser.add_argument('--checkpoint', type=str, default='')
     parser.add_argument('--shuffle_sentences', action='store_true')
+    parser.add_argument('--token_level', action='store_true')
 
     args = parser.parse_args()
 

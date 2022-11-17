@@ -41,23 +41,6 @@ def greedy_generate(model, tokenizer, input_txt, max_len, force_cpu=False, tempe
     return f'{tokenizer.ids_to_text(output_tokens)}'
 
 
-@torch.no_grad()
-def beam_search(model, tokenizer, input_txt, max_len, force_cpu=False, temperature=0.0, beam_size=5):
-    raise NotImplementedError
-    model.eval()
-    device = 'cuda' if torch.cuda.is_available() and isfalse(force_cpu) else 'cpu'
-    model.to(device)
-    input_ids = [0] + tokenizer.text_to_ids(input_txt)
-    input_ids = torch.tensor(input_ids, device=device).unsqueeze(0).repeat(beam_size, 1)
-    
-    while len(input_ids[0]) < max_len:
-        logits = model(input_ids)
-        last_logits = logits[:, -1, :]
-        last_logits = last_logits[:, 1:] # remove <pad>
-        probs = torch.softmax(last_logits, dim=-1)
-        next_tokens = probs.topk(beam_size, dim=-1, sorted=True)
-        print(next_tokens.indices[:beam_size].shape)
-
 
 @torch.no_grad()
 def eval_perplexity(model, tokens, token_lens, return_ppl=True):
@@ -90,10 +73,12 @@ def eval_corpus_perplexity(model, dataloader, device, word_level=False):
     text_lens = []
     for batch in pbar:
         b_text = batch['text']
-        b_text_lens = [len(t.split()) + 1 for t in b_text] # + 1 for <eos> !
+        #print(b_text)
+        b_text_lens = [len(t.split()) + 1  for t in b_text] # + 1 for <eos> ! split() ignores whitespaces which is what we want
         text_lens.extend(b_text_lens)
-        
+
         tokens, token_lens = batch_to_device(batch, device)
+
         cur_loss = eval_perplexity(model, tokens, token_lens, return_ppl=False)
         losses.append(cur_loss)
         all_token_lens.append(token_lens)
@@ -101,6 +86,7 @@ def eval_corpus_perplexity(model, dataloader, device, word_level=False):
 
     all_token_lens = torch.cat(all_token_lens).cpu()
     avg_token_lens = all_token_lens.reshape(-1).float().mean()
+ 
     losses = torch.cat(losses)
     avg_loss = losses.reshape(-1).float().mean()
     text_lens = torch.tensor(text_lens)
@@ -108,10 +94,8 @@ def eval_corpus_perplexity(model, dataloader, device, word_level=False):
     if not word_level:
         ppl = torch.exp(avg_loss) 
     else:
-        ppl = (losses * all_token_lens) / text_lens
-        ppl = torch.exp(ppl.mean())
-        
-        
+        ppl = (losses * (all_token_lens+1)) / text_lens # +1 for <eos> !
+        ppl = torch.exp(ppl.mean())        
 
     return ppl, avg_token_lens.item()
 
@@ -148,7 +132,8 @@ def load_config(config:str):
     return OmegaConf.load(config)
 
 def add_bos(tokens, bos_token_id):
-    bos = torch.ones_like(tokens[:, :1]) * bos_token_id
+    #bos = torch.ones_like(tokens[:, :1]) * bos_token_id # bug if 1st dim is 0
+    bos = torch.ones(tokens.shape[0], 1, dtype=tokens.dtype, device=tokens.device) * bos_token_id
     return torch.cat([bos, tokens], dim=1)
 
 def add_eos(tokens, eos_id, token_lens):
@@ -262,6 +247,21 @@ def load_model(config:OmegaConf, tokenizer, max_len:int=None):
             dim_head = modelconfig.get('dim_head', 32),
             causal=True,
             dropout= modelconfig.get('dropout', 0.0),
+        )
+    elif 'mlp' in mtype:
+        from lm.MLPLM import transformer_lm
+        modelconfig = modelconfig[mtype]
+        
+        model = transformer_lm( # some of this is redundant 
+            dim = modelconfig.get('d_model', 256),
+            vocab_size=tokenizer.vocab_size,
+            depth = modelconfig.get('n_layers', 12),
+            heads = modelconfig.get('n_heads', 8),
+            dim_head = modelconfig.get('dim_head', 32),
+            causal=True,
+            dropout= modelconfig.get('dropout', 0.0),
+            temperature= modelconfig.get('temperature', 15.5),
+            **modelconfig.get('kwargs', {})
         )
         
     elif 'qknorm' in mtype:

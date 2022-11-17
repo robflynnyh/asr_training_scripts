@@ -5,6 +5,40 @@ from torch import einsum
 from torch.utils.checkpoint import checkpoint # # gradient/activation checkpointing
 from functools import partial
 
+def exists(val):
+    return val is not None
+
+# token shifting
+# lucidrains implementation: https://github.com/lucidrains/x-transformers/blob/main/x_transformers/x_transformers.py
+# BlinkDL idea from RWKV-LM https://github.com/BlinkDL/RWKV-LM
+def shift(t, amount, mask = None):
+    if amount == 0:
+        return t
+    else:
+        amount = min(amount, t.shape[1])
+
+    if exists(mask):
+        t = t.masked_fill(~mask[..., None], 0.)
+
+    return F.pad(t, (0, 0, amount, -amount), value = 0.)
+
+class ShiftTokens(nn.Module):
+    def __init__(self, shifts, fn):
+        super().__init__()
+        self.fn = fn
+        self.shifts = tuple(shifts)
+
+    def forward(self, x, **kwargs):
+        mask = kwargs.get('mask', None)
+        shifts = self.shifts
+        segments = len(shifts)
+        feats_per_shift = x.shape[-1] // segments
+        splitted = x.split(feats_per_shift, dim = -1)
+        segments_to_shift, rest = splitted[:segments], splitted[segments:]
+        segments_to_shift = list(map(lambda args: shift(*args, mask = mask), zip(segments_to_shift, shifts)))
+        x = torch.cat((*segments_to_shift, *rest), dim = -1)
+        return self.fn(x, **kwargs)
+
 
 class DynamicPositionBias(nn.Module):
     '''taken From Phil Wang's x-transformers library'''
@@ -95,30 +129,44 @@ class CosineAttention(nn.Module):
     ):
         super().__init__()
         assert activation in ['relusq', 'softmax']
-        self.n_feats = n_feats
-        self.head_dim = head_dim
-        self.n_heads = n_heads
+        self.shared_kv = kwargs.get('shared_kv', False)
+        self.talking_heads = kwargs.get('talking_heads', False)
+
+        self.n_feats, self.head_dim, self.n_heads = n_feats, head_dim, n_heads
         self.dropout = nn.Dropout(dropout)
         self.bias = bias
         self.return_attention = return_attention
-
         self.causal = causal
+
+        if self.talking_heads:
+            self._head_proj = nn.Conv2d(n_heads, n_heads, (1, 1))
 
         self.temperature = torch.nn.Parameter(torch.tensor(temperature), requires_grad=True) if isinstance(temperature, float) else temperature
 
         self.activation = ReLUSquared() if activation == 'relusq' else nn.Softmax(dim=-1)
 
-        self.qkv_proj = nn.Linear(n_feats, 3 * n_heads * head_dim, bias=bias)
+        if not self.shared_kv:
+            self.qkv_proj = nn.Linear(n_feats, 3 * n_heads * head_dim, bias=bias)
+            self.qkv = lambda x: rearrange(self.qkv_proj(x), "b n (h d qkv) -> qkv b h n d", qkv=3, h=n_heads, d=head_dim)
+        else:
+            self.q_proj, self.kv_proj = [nn.Linear(n_feats, el, bias=bias) for el in [n_heads * head_dim, 2 * head_dim]]
+            map_q, map_kv = lambda q: rearrange(q, 'b n (h d) -> b h n d', h=n_heads), lambda kv: rearrange(kv, 'b n (kv d) -> kv b () n d', kv=2, d=head_dim)
+            self.qkv = lambda x: (map_q(self.q_proj(x)), *map_kv(self.kv_proj(x)))
+
         self.out_proj = nn.Linear(n_heads * head_dim, n_feats, bias=bias)
+    
+    def head_proj(self, dots):
+        if not self.talking_heads:
+            return dots
+        dots = self._head_proj(dots)
+        return dots      
 
-
-    def attend(self, qkv, mask, pos_fn):
-        query, key, value = qkv
-        
+    def attend(self, query, key, value, mask, pos_fn):
         query, key = map(l2norm, (query, key))
 
         dots = einsum('bhid,bhjd->bhij', query, key) * self.temperature
-  
+        dots = self.head_proj(dots)
+
         dots += pos_fn(dots.shape[-1], device=dots.device, dtype=dots.dtype)
         qkmask = ~mask
         attn_mask = ~(rearrange(qkmask, "b n -> b () n ()") * rearrange(qkmask, "b n -> b () () n"))
@@ -129,7 +177,8 @@ class CosineAttention(nn.Module):
         
         dots.masked_fill_(attn_mask, -torch.finfo(dots.dtype).max)
     
-        attn = self.activation(dots)   
+        attn = self.activation(dots)
+     
         attn = self.dropout(attn)
         return einsum("bhij,bhjd->bhid", attn, value)
 
@@ -142,9 +191,9 @@ class CosineAttention(nn.Module):
         if mask is None:
             mask = torch.zeros(B, N, device=x.device, dtype=torch.bool)
 
-        qkv = rearrange(self.qkv_proj(x), "b n (h d qkv) -> qkv b h n d", qkv=3, h=H, d=D) # qkv projection
+        q, k, v = self.qkv(x)
     
-        out = self.attend(qkv, mask, pos_fn)
+        out = self.attend(q, k, v, mask, pos_fn)
 
         out = rearrange(out, "b h n d -> b n (h d)")
         out = self.out_proj(out)
@@ -172,10 +221,6 @@ class GLU(nn.Module):
 
 
 
-        
-
-
-
 class transformer(nn.Module):
     def __init__(
             self, 
@@ -188,7 +233,6 @@ class transformer(nn.Module):
             shared_temperture=False,
             intermediate_loss=True,
             dropout = 0.1,
-            checkpoint = False,
             **kwargs
         ):
         super().__init__()
@@ -196,9 +240,12 @@ class transformer(nn.Module):
             intermediate_loss = False
 
         ff_mult = kwargs.get('ff_mult', 4)
+        self.checkpoint_every_n = kwargs.get('checkpoint_every_n', 0)
+        self.token_shift = kwargs.get('token_shift', False)
 
-     
+
         self.temperature = nn.Parameter(torch.tensor(temperature), requires_grad=True) if shared_temperture else temperature
+    
 
         self.intermediate_loss = intermediate_loss
 
@@ -210,7 +257,12 @@ class transformer(nn.Module):
             log_distance = False,
             norm = False
         )
-        self.grad_checkpointing = checkpoint
+
+        self.token_shifter = lambda x: x
+        if self.token_shift:
+            self.token_shifter = ShiftTokens(range(0, 2), nn.Identity())
+        self.token_shift = lambda x: self.token_shifter(x)
+
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
@@ -241,30 +293,28 @@ class transformer(nn.Module):
         return custom_forward
 
     def checkpoint(self, layer, module, *args, **kwargs):
-        condition = self.training and self.grad_checkpointing and layer < self.depth - 1
+        condition = self.training and self.checkpoint_every_n != 0 and layer < self.depth - 1 and layer % self.checkpoint_every_n == 0
         return checkpoint(self.create_custom_forward(module), *args, **kwargs) if condition else module(*args, **kwargs)
-
 
     def forward(self, x, mask=None, self_condtioning=None):
         intermediate_logits = []
         for i, (attn, ff) in enumerate(self.layers):
+
+            x = self.token_shift(x)
             x = self.checkpoint(i, attn, x, self.positional_bias, mask) + x
-            x = self.checkpoint(i, ff, x) + x
+            x = self.checkpoint(i, ff, x) + x   
 
             if i < self.depth - 1 and self_condtioning is not None:
                 x, logits = self_condtioning(x)
                 intermediate_logits.append(logits)
 
-        # stack intermediate logits
-        if len(intermediate_logits) > 0:
-            intermediate_logits = torch.stack(intermediate_logits, dim=0) # D x B x N x V
-
+        if len(intermediate_logits) > 0: # stack intermediate logits
+            intermediate_logits = torch.stack(intermediate_logits, dim=0) # D x B x N x L
+    
         return x, intermediate_logits
 
 class shared_embedding_output_layer(nn.Module):
-    '''
-    Pass a embedding layer and then use this module as the output layer
-    '''
+    '''Pass a embedding layer and then use this module as the output layer'''
     def __init__(self, embedding_layer, bias=False):
         super().__init__()
         self.embedding_layer = embedding_layer
@@ -335,7 +385,7 @@ class transformer_lm(nn.Module):
     def self_condition_fn(self):
         def self_condition(x):
             logits = self.to_logits(self.post_norm(x))
-            if self.self_conditioning:
+            if self.self_conditioning: # not effective for LMs (intermediate loss is tho)
                 z = F.softmax(logits, dim=-1)
                 z = self.reprojection_layer(z)
                 x = z + x

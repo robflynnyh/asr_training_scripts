@@ -75,6 +75,7 @@ class ReLUSquared(nn.Module):
 def l2norm(t, groups = 1, dim = -1):
     if groups == 1:
         return F.normalize(t, p = 2, dim = dim)
+        
     t = rearrange(t, '... (g d) -> ... g d', g = groups)
     t = F.normalize(t, p = 2, dim = dim)
     return rearrange(t, '... g d -> ... (g d)')

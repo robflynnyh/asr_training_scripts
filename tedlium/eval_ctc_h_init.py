@@ -73,11 +73,6 @@ def evaluate(args, model, corpus, decoder):
         targets = [el[0] for el in batch['text']]
         targets = [el.replace(" '", "'") for el in targets] # change this in training so that it's not needed here
 
-        #segment_lens = batch['segment_lens'].to(device)
-        #for i in range(len(targets)):
-        #    print(f'{i}: {targets[i]}')
-        #exit()
-   
         model_out = model.forward(
             input_signal=audios, 
             input_signal_length=audio_lengths,
@@ -91,6 +86,7 @@ def evaluate(args, model, corpus, decoder):
         save_attention_information(args, batch_num, additional_outputs, speaker_ids, targets)
 
         log_probs = log_probs.detach().cpu().numpy()
+
    
         decoded = decode_lm(log_probs, decoder, beam_width=args.beam_size, encoded_lengths=encoded_len)
         decoded = [el.replace(" '", "'") for el in decoded] # change this in training so that it's not needed here
@@ -122,6 +118,7 @@ def evaluate(args, model, corpus, decoder):
 
 
 def main(args):
+    print(args.self_conditioned, 'DD')
     model = load_model(args) if args.self_conditioned == False else load_sc_model(args)
     if args.checkpoint != '':
         load_checkpoint(args, model)
@@ -150,7 +147,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser() 
     parser.add_argument('--load_pretrained', action='store_true')
     parser.add_argument('--pretrained', type=str, default='stt_en_conformer_ctc_small') # stt_en_conformer_ctc_large stt_en_conformer_transducer_large
-    parser.add_argument('--model_config', type=str, default='/exp/exp1/acp21rjf/deliberation/Custom/model_configs/Hconformer_ctc_bpe_small.yaml') 
+    parser.add_argument('--model_config', type=str, default='../model_configs/conformer_sc_ctc_bpe_small.yaml') 
 
     parser.add_argument('--tokenizer', type=str, default='./tokenizer_spe_bpe_v128', help='path to tokenizer dir')
     parser.add_argument('--max_duration', type=float, default=60, help='max duration of audio in seconds')
@@ -165,7 +162,7 @@ if __name__ == '__main__':
     parser.add_argument('--alpha', type=float, default=0.6)
     parser.add_argument('--beta', type=float, default=0.8)
     parser.add_argument('--sweep', action='store_true', help='run wandb search for language model weight')
-    parser.add_argument('-sc','--self_conditioned', action='store_false', help='use self-conditioned model (STORE FALSE)')
+    parser.add_argument('-nsc','--not_self_conditioned', action='store_true', help='use for non self-conditioned models')
     parser.add_argument('--config_from_checkpoint_dir', action='store_false', help='load config from checkpoint dir') ##chane
     parser.add_argument('-cer', '--cer', action='store_true', help='compute CER instead of WER')
 
@@ -180,8 +177,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--concat_samples', action='store_true', help='if set, will concat cuts from same meeting instead of stacking them')
     parser.add_argument('--split_speakers', action='store_true', help='if set, wont concat samples from different speakers, (concat_samples must be enabled)')
-    parser.add_argument('-dnpsl','--do_not_pass_segment_lens', action='store_true', help='if set, will not pass segment lens to the model, used with concat_samples for single segment models')
 
+    parser.add_argument('-psl','--pass_segment_lengths', action='store_true', help='if set, will pass segment lens to the model, used with concat_samples for multi segment models')
+    
     parser.add_argument('-sclite','--sclite', action='store_true', help='if set, will eval with sclite')
     parser.add_argument('-sclite_dir', '--sclite_dir', type=str, default='./trns')
 
@@ -189,6 +187,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     assert isfalse(args.split_speakers) or args.concat_samples, 'seperate_speakers can only be enabled if concat_samples is enabled'
+
+    args.do_not_pass_segment_lens = not args.pass_segment_lengths
+    args.self_conditioned = not args.not_self_conditioned
 
     if args.checkpoint != '':
         args.checkpoint = os.path.join(args.checkpoint_dir, args.checkpoint)

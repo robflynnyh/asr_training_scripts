@@ -1,12 +1,63 @@
 
-dataset: 'AMI'
+dataset: 'TED'
 
 model:
   tokenizer:
-    dir: "./ami/tokenizers/tokenizer_spe_bpe_v8000" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
+    dir: "./tedlium/tokenizers/tokenizer_spe_bpe_v29" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
     type: bpe  # has to be bpe (u have no choice)
   
-  modeltype: qknorm_ami
+  modeltype: qknorm_shared
+
+  qknorm_gau:
+    d_model: 256
+    n_layers: 12
+    n_heads: 8
+    dim_head: 32
+    dropout: 0.5
+    temperature: 15.5
+    kwargs:
+      ff_mult: 4
+      checkpoint_every_n: 2
+
+
+  qknorm_test_hierarchy:
+    d_model: 256
+    n_layers: 12
+    n_heads: 8
+    dim_head: 32
+    dropout: 0.5
+    temperature: 15.5
+    kwargs:
+      ff_mult: 4
+      tie_embedding: false
+      checkpoint_every_n: 2
+      shared_kv: false
+
+  qknorm_shared:
+    d_model: 256
+    n_layers: 12
+    n_heads: 8
+    dim_head: 32
+    dropout: 0.5
+    temperature: 15.5
+    kwargs:
+      ff_mult: 4
+      tie_embedding: false
+      checkpoint_every_n: 1
+      shared_kv: true
+
+
+  qknorm_test:
+    d_model: 256
+    n_layers: 12
+    n_heads: 8
+    dim_head: 32
+    dropout: 0.5
+    temperature: 15.5
+    kwargs:
+      ff_mult: 4
+      tie_embedding: false
+
 
   qknorm_ami:
     d_model: 256
@@ -20,27 +71,7 @@ model:
       tie_embedding: false
 
 
-  qknorm_test:
-    d_model: 256
-    n_layers: 12
-    n_heads: 8
-    dim_head: 32
-    dropout: 0.5
-    temperature: 15.5
-    kwargs:
-      ff_mult: 4
-      tie_embedding: True
 
-
-  qknorm_test_hierarchy:
-    d_model: 256
-    n_layers: 12
-    n_heads: 8
-    dim_head: 32
-    dropout: 0.5
-    temperature: 15.5
-    kwargs:
-      ff_mult: 4
 
   myopic_test:
     d_model: 256

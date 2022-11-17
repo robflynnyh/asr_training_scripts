@@ -9,6 +9,7 @@
 *.log
 *.arpa
 *.gz
+*.pkl
 
 wandb/
 wandb/*

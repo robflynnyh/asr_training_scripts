@@ -279,7 +279,7 @@ class TokenizerCollator:
         assert text_only == False or text is not None, "If text_only is True, text must be provided"
 
         token_sequences = [
-            " ".join(supervision.text for supervision in cut.supervisions) ##
+            " ".join(supervision.text for supervision in cut.supervisions) ## LOOK AT THIS
             for cut in cuts
         ] if isfalse(text_only) else [text]
         
