@@ -106,7 +106,10 @@ def get_text(cutlist):
             for supervision in utt.supervisions:
                 all_text[-1] += supervision.text.strip() if all_text[-1] == "" else " " + supervision.text.strip()
         all_text.append("") if i < len(cutlist) - 1 else None 
-    #all_text.pop()
+    
+    all_text = [tools.transform_txt(el) for el in all_text]
+    all_text = [el.strip() for el in all_text]
+
     return all_text
 
 
@@ -158,6 +161,7 @@ class Minimal_IID_Dataset(torch.utils.data.Dataset):
     text_only = self.text_only
     cuts = self.all_cuts[idx]
     audios, audio_lens = collate_audio(cuts) if isfalse(text_only) else (None, None)
+    #print(len(cuts))
     tokens, token_lens = self.tokenizer(cuts=cuts) if isfalse(text_only) else self.tokenizer(cuts=None, text=cuts)
     return {
         "audio": audios,
@@ -186,6 +190,7 @@ class Minimal_Evaluation_IID_Dataset(torch.utils.data.Dataset):
         "audio_lens": audio_lens,
         "text": [tools.remove_multiple_spaces(" ".join(supervision.text for supervision in cut.supervisions)) for cut in cuts],
     }
+
     if self.return_speaker:
         out["speakers"] = [[el.speaker for el in cut.supervisions] for cut in cuts]
 
@@ -205,6 +210,8 @@ def get_eval_dataloader(
     max_allowed_utterance_gap=-1,
     ):
     assert isfalse(split_speakers) or concat_samples, "concat_samples must be True if split_speakers is True"
+    assert text_only, "Not here use standard dataloader"
+
     meetings = prepare_partition(split)
     samples = prepare_samples(
         meetings = meetings, 

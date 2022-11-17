@@ -88,7 +88,8 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
     print('Evaluation epoch')
     for batch in pbar:
         tokens, token_lens = batch_to_device(batch, device)
-        token_lens += 1
+    
+        token_lens += 1 # add 1 for bos
         tokens = add_bos(tokens, bos_token_id=0)
         targets = tokens.clone()
         targets[:, :-1] = tokens[:, 1:]
@@ -141,6 +142,7 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
 
     for i, batch in enumerate(pbar):
         tokens, token_lens = batch_to_device(batch, device)
+      
         #print(token_lens.shape)
         token_lens += 1 # for <bos> and <eos>
         tokens = add_bos(tokens, bos_token_id=0)
@@ -232,7 +234,7 @@ def main(args):
         num_workers=args.num_workers, 
         batch_size=args.micro_batch_number, 
         concat_samples=False,
-        split_speakers=False,
+        split_speakers=args.split_speakers,
         gap=0.0,
         speaker_gap=0.0,
         single_speaker_with_gaps=False,
@@ -385,6 +387,8 @@ if __name__ == '__main__':
     parser.add_argument('--single_speaker_with_gaps', action='store_true', help='if set, utterances will contain 1 speaker and additional gaps of speaker_gap will be added if there is a speaker change between two utternces of the same speaker')
   
     parser.add_argument('--num_workers', type=int, default=1, help='number of workers for dataloader')
+    parser.add_argument('--split_speakers', action='store_true', help='if set, will split speaker into multiple utterances')
+
 
     parser.add_argument('--project_name', default='deliberation-LM', type=str)
   
