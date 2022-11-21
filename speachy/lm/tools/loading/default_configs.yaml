@@ -1,0 +1,6 @@
+model:
+  d_model: 256
+  n_layers: 12
+  n_heads: 8
+  dim_head: 32
+  dropout: 0.1

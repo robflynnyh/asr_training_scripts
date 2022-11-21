@@ -137,7 +137,10 @@ def decode_lm(logits_list, decoder, beam_width=100, encoded_lengths=None):
         encoded_lengths = [len(logits) for logits in logits_list]
 
     for logits, length in zip(logits_list, encoded_lengths):
-        decoded.append(decoder.decode(logits[:length], beam_width=beam_width))
+        decoded.append(decoder.decode(
+            logits[:length], 
+            beam_width=beam_width
+        ))
         
 
     return decoded

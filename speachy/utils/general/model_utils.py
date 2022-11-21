@@ -7,6 +7,8 @@ import numpy as np
 from omegaconf.omegaconf import OmegaConf
 import json
 
+def load_config(config:str):
+    return OmegaConf.load(config)
 
 def load_checkpoint(args, model, optim=None, force_cpu=False):
     checkpoint_path = args.checkpoint
