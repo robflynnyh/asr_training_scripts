@@ -220,7 +220,7 @@ def load_corpus(target_folder:str=request_env('TED_DEFAULT'), prefix_path=reques
     for split in ['train', 'dev', 'test']:
         cuts = CutSet.from_file(os.path.join(target_folder, f'tedlium_cuts_{split}.jsonl.gz'))
         ds[split] = cuts.with_recording_path_prefix(prefix_path)
-        if transform_txt:
+        if transform:
             ds[split] = ds[split].transform_text(transform_txt)
     return ds   
 
