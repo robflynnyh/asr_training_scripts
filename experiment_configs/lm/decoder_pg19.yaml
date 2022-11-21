@@ -14,11 +14,11 @@ model:
     n_layers: 12
     n_heads: 8
     dim_head: 32
-    dropout: 0.5
+    dropout: 0.1
     temperature: 15.5
     kwargs:
       ff_mult: 4
       tie_embedding: false
       checkpoint_every_n: 1
       shared_kv: true
-      talking_heads: true
+      talking_heads: false

@@ -65,6 +65,7 @@ def evaluate(args, model, corpus, decoder):
 
     pbar = tqdm(dataloader, total=len(dataloader))
     for batch_num, batch in enumerate(pbar):
+    
         audios = batch['audio'].reshape(-1, batch['audio'].shape[-1]).to(device)
       
         speaker_ids = ["_".join(el[0]) for el in batch['speakers']]

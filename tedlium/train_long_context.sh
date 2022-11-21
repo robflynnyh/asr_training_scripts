@@ -1,20 +1,19 @@
 echo '<<< TRAINING SMALL CTC MODEL >>>'
 
-python train_H.py --checkpoint 'checkpoint_101_id_82.pt' \
-    --checkpoint_dir './checkpoints_flash' \
+python train_H.py --checkpoint 'checkpoint_1_id_72.pt' \
+    --checkpoint_dir './checkpoints_cosine' \
     --model_config '../model_configs/conformer_sc_ctc_bpe_small.yaml' \
-    --min_lr 1e-7 \
-    --max_lr 5e-5 \
-    --step_size 500 \
-    --accumulate_gradients 2 \
+    --min_lr 1e-5 \
+    --max_lr 1.3e-4 \
+    --step_size 70 \
+    --accumulate_gradients 4 \
     --clip_gradients \
-    --clip_gradients_value 10 \
+    --clip_gradients_value 15 \
     --micro_batch_duration 0 \
-    --gap 0.1 \
-    --micro_batch_number 30 \
+    --micro_batch_number 25 \
     --do_not_pass_segment_lens \
-    --wandb_id '2csgaq4s' \
-    --schedular_data 'TEDFLASH.json' \
+    --wandb_id '17itec5p' \
+    --schedular_data 'cosineted.json' \
     
 
 

@@ -1,0 +1,7 @@
+README.md
+setup.py
+speachy.egg-info/PKG-INFO
+speachy.egg-info/SOURCES.txt
+speachy.egg-info/dependency_links.txt
+speachy.egg-info/requires.txt
+speachy.egg-info/top_level.txt
