@@ -1,20 +1,20 @@
 echo '<<< TRAINING AUTOREGRESSIVE TLM >>>'
 
-python train_LM.py --checkpoint '' \
-    --checkpoint_dir './checkpoints/checkpoint_tedlium_90_29_50do_shgau' \
-    --model_config './experiment_configs/lm/decoder_test.yaml' \
-    --min_lr 3.5e-5 \
-    --max_lr 4.5e-4 \
-    --step_size 100 \
-    --accumulate_gradients 8\
+python train_LM.py --checkpoint 'checkpoint_34_id_27.pt' \
+    --checkpoint_dir './checkpoints/pg19_d010_nths/' \
+    --model_config './experiment_configs/lm/decoder_pg19.yaml' \
+    --min_lr 1e-5 \
+    --max_lr 3.3e-4 \
+    --step_size 400 \
+    --accumulate_gradients 10\
     --clip_gradients \
     --clip_gradients_value 15 \
-    --micro_batch_duration 90 \
+    --micro_batch_duration 300 \
     --micro_batch_number 3 \
-    --max_allowed_utterance_gap 3.0 \
+    --max_allowed_utterance_gap 10.0 \
     --wandb_id '' \
     --save_top_k 1 \
-    --schedular_data './checkpoints/tedlium_90_29_50do_shgau.json' \
+    --schedular_data './checkpoints/tedlium_pg19nths.json' \
     --project_name 'deliberation-LM' \
     
 

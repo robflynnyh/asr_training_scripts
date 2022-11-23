@@ -61,6 +61,7 @@ def evaluate(args, model, corpus, decoder):
         gap=args.gap,
         speaker_gap=args.speaker_gap,
         single_speaker_with_gaps=args.single_speaker_with_gaps,
+        max_allowed_utterance_gap=args.max_allowed_utterance_gap,
     )
 
     pbar = tqdm(dataloader, total=len(dataloader))
@@ -175,6 +176,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--single_speaker_with_gaps', action='store_true', help='if set, utterances will contain 1 speaker and additional gaps of speaker_gap will be added if there is a speaker change between two utternces of the same speaker')
     parser.add_argument('--speaker_gap', type=float, default=1.0, help='for use with single_speaker_with_gaps, will add this many seconds of silence between utterances of the same speaker when there is a speaker change in between them')
+
+    parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=3.0, help='max allowed gap between utterances in seconds')
 
     parser.add_argument('--concat_samples', action='store_true', help='if set, will concat cuts from same meeting instead of stacking them')
     parser.add_argument('--split_speakers', action='store_true', help='if set, wont concat samples from different speakers, (concat_samples must be enabled)')

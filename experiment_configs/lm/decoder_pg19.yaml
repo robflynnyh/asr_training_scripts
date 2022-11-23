@@ -14,7 +14,7 @@ model:
     n_layers: 12
     n_heads: 8
     dim_head: 32
-    dropout: 0.1
+    dropout: 0.5
     temperature: 15.5
     kwargs:
       ff_mult: 4
