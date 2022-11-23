@@ -50,16 +50,18 @@ def evaluate(args, model, corpus, decoder):
         speaker_gap=args.speaker_gap,
         single_speaker_with_gaps=args.single_speaker_with_gaps,
         return_meta_data=True,
+        max_allowed_utterance_gap=args.max_allowed_utterance_gap,
     )
 
     pbar = tqdm(dataloader, total=len(dataloader))
     for batch_num, batch in enumerate(pbar):
 
-        audios = batch['audio'][0][0].unsqueeze(0).to(device)
+        audios = batch['audio'].reshape(1, -1).to(device)
       
         speaker_ids = ["_".join(el[0]) for el in batch['speakers']]
         
-        audio_lengths = batch['audio_lens'][0][0].reshape(1).to(device)
+        print(batch['audio_lens'])
+        audio_lengths = batch['audio_lens'].reshape(1).to(device)
         targets = [el[0] for el in batch['text']]
         targets = [el.replace(" '", "'") for el in targets] # change this in training so that it's not needed here but i'll keep it for now
         meta_data = batch['metadata'][0][0]
@@ -134,12 +136,13 @@ if __name__ == '__main__':
     parser.add_argument('--model_config', type=str, default='../model_configs/conformer_sc_ctc_bpe_small.yaml') 
 
     parser.add_argument('--tokenizer', type=str, default='./tokenizer_spe_bpe_v128', help='path to tokenizer dir')
-    parser.add_argument('--max_duration', type=float, default=60, help='max duration of audio in seconds')
+    parser.add_argument('--max_duration', type=float, default=0, help='max duration of audio in seconds')
 
 
     parser.add_argument('--log_file', type=str, default='eval_log.txt')
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints')
     parser.add_argument('--checkpoint', type=str, default='checkpoint_68_id_15.pt')
+    
 
     parser.add_argument('--beam_size', type=int, default=100)
     parser.add_argument('-lm', '--language_model', type=str, default='', help='arpa n-gram model for decoding')#./ngrams/3gram-6mix.arpa
@@ -148,6 +151,8 @@ if __name__ == '__main__':
     parser.add_argument('--beta', type=float, default=0.8)
 
     parser.add_argument('-nsc','--not_self_conditioned', action='store_true', help='use for non self-conditioned models')
+
+    parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=10.0, help='max allowed gap between utterances in seconds')
 
 
     parser.add_argument('-gap','--gap', default=0.1, type=float, help='gap between utterances when concatenating')
@@ -164,7 +169,6 @@ if __name__ == '__main__':
     parser.add_argument('-save','--save_outputs', default='', type=str, help='save outputs to file')
     args = parser.parse_args()
 
-    assert isfalse(args.split_speakers) or args.concat_samples, 'seperate_speakers can only be enabled if concat_samples is enabled'
 
     args.do_not_pass_segment_lens = not args.pass_segment_lengths
     args.self_conditioned = not args.not_self_conditioned

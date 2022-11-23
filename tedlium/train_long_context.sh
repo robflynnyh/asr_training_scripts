@@ -1,7 +1,7 @@
 echo '<<< TRAINING SMALL CTC MODEL >>>'
 
-python train_H.py --checkpoint 'checkpoint_1_id_72.pt' \
-    --checkpoint_dir './checkpoints_cosine' \
+python train_H.py --checkpoint '' \
+    --checkpoint_dir './checkpoints_cosine_nths' \
     --model_config '../model_configs/conformer_sc_ctc_bpe_small.yaml' \
     --min_lr 1e-5 \
     --max_lr 1.3e-4 \
@@ -12,8 +12,8 @@ python train_H.py --checkpoint 'checkpoint_1_id_72.pt' \
     --micro_batch_duration 0 \
     --micro_batch_number 25 \
     --do_not_pass_segment_lens \
-    --wandb_id '17itec5p' \
-    --schedular_data 'cosineted.json' \
+    --wandb_id '' \
+    --schedular_data 'cosineted_nths.json' \
     
 
 

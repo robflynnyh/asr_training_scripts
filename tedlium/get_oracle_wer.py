@@ -45,10 +45,10 @@ def main(hypothesis):
 
 if __name__ == '__main__':
     args = argparse.ArgumentParser()
-    args.add_argument("--hypjson", type=str, required=True)
+    args.add_argument("--hypf", type=str, required=True)
     args = args.parse_args()
 
-    with open(args.hypjson, 'rb') as f:
+    with open(args.hypf, 'rb') as f:
         hyps = pkl.load(f)
 
     main(hyps)

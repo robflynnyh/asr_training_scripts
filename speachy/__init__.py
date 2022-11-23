@@ -1,5 +1,6 @@
 from . import (
     lm,
     utils,
-    asr
+    asr,
+    rescoring
 )
