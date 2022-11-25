@@ -28,6 +28,7 @@ def get_rescore_wer(hypothesis):
         for utt in tqdm(recording):
             first_p_hyp = utt['beams'][0][0]['text']
             best_hyp = utt['best_hyp']
+ 
             target = utt['targets'][0]
             hyps.append(best_hyp)
             refs.append(target)

@@ -17,26 +17,18 @@ import non_iid_dataloader as niiddl
 import lm_utils
 import os 
 from einops import rearrange
+from speachy.rescoring.tools import (
+        sort_hypothesis_by_recording, 
+        order_recordings_by_start_time,
+        interpolate
+)
+import wandb
+
+from compute_rescore_wer import main as compute_rescore_wer
 
 class argsclass:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
-
-def sort_hypothesis_by_recording(hyps):
-    recordings = {}
-    for hyp in hyps:
-        rec = hyp['meta_data']['recording_id']
-        if rec not in recordings:
-            recordings[rec] = []
-        recordings[rec].append(hyp)
-    return recordings
-
-
-
-def order_recordings_by_start_time(hypothesis):
-    for key in hypothesis.keys():
-        hypothesis[key] = sorted(hypothesis[key], key=lambda x: x['meta_data']['timings']['segment_start'])
-    return hypothesis
 
 @torch.no_grad()
 def get_text_probability(args, model, tokenizer, text, history):
@@ -61,13 +53,16 @@ def get_text_probability(args, model, tokenizer, text, history):
 
     logits = model(**model_args)
     if history_len > 0:
-        logits = logits[:, history_len:, :]
-        targets = targets[:, history_len:]
+        logits = logits[:, history_len:-1, :] #-1 to remove the <eos> token
+        targets = targets[:, history_len:-1]
 
+    # temperature
+    logits = logits / args.temperature
     logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
+
     # then take the log of the probability of the target
-    print(logprobs.argmax(dim=-1)[0,:20], targets[0,:20])
-    print(tokenizer.ids_to_text(logprobs.argmax(dim=-1)[0,:50].tolist()), '- :SPAACE: -', tokenizer.ids_to_text(targets[0,:50].tolist()))
+    #print(logprobs.argmax(dim=-1)[0,:20], targets[0,:20])  # DEBUG !!
+    #print(tokenizer.ids_to_text(logprobs.argmax(dim=-1)[0,:50].tolist()), '- :SPAACE: -', tokenizer.ids_to_text(targets[0,:50].tolist()))
     logprobs = logprobs.squeeze(0).gather(1, targets.squeeze(0).unsqueeze(1))
 
     logprobs = logprobs.sum()
@@ -82,17 +77,6 @@ def trim_history(history, max_len):
         history = history[-max_len:]
     return ' '.join(history)
 
-def interpolate(am_score, lm_score, alpha):
-    '''
-    am_score: Acoustic model score (log probability)
-    lm_score: Language model score (log probability)
-    alpha: Interpolation weight
-    we compute this in log space
-    '''
-    log_alpha = torch.log(torch.tensor(alpha))
-    log_1_minus_alpha = torch.log(torch.tensor(1-alpha))
-    print(am_score, lm_score)
-    return torch.logaddexp(am_score + log_1_minus_alpha, lm_score + log_alpha)
 
 def compute_beam_ppls(args, model, tokenizer, recording_hyps):
     max_beam = args.stop_at_beam 
@@ -105,7 +89,7 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps):
         history_text = '' if prev_end - segment_start > args.max_utt_gap else history_text  # reset history if gap between utterances is too large
         history_text = trim_history(history_text, max_history)
         best_log_p, best_hyp = float('-inf'), ''
-    
+        print(f'Target: {utt["targets"][0]}\n')
         for idx in utt['beams'][0].keys():
             if idx >= max_beam:
                 break
@@ -115,10 +99,13 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps):
             prob = get_text_probability(args, model, tokenizer, hyptext, history_text)
             cur['tlm_prob'] = prob
             cur['rescore_lp'] = interpolate(AM_prob, prob, args.interpolation_weight)
+        
             print(f'beam: {idx}, prob: {cur["rescore_lp"]}, hyp: {hyptext}\n history len: {len(history_text.split())}')
             if cur['rescore_lp'] > best_log_p:
                 best_log_p = cur['rescore_lp']
                 best_hyp = hyptext
+        if utt['beams'][0][0]['text'] != best_hyp:
+            print(f'{["-"]*200}BEST HYP: {best_hyp}{"-"*200}')
         utt['best_logp'] = best_log_p
         utt['best_hyp'] = best_hyp
         print(f'best logp: {best_log_p}')
@@ -152,21 +139,29 @@ def main(args, hypothesis):
     hypothesis = order_recordings_by_start_time(hypothesis)
 
     hypothesis = compute_all_ppls(args, model, tokenizer, hypothesis)
+    wer = compute_rescore_wer(hypothesis)
+    wandb.log({'wer': wer})
+
+    '''
     with open(args.saveas, 'wb') as f:
         pkl.dump(hypothesis, f)
-    
+    '''
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hyppkl", type=str, required=True)
-    parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_test.yaml')
+    parser.add_argument("--hyppkl", type=str, default='nbests.pkl')
+    parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml')
     parser.add_argument('--device', type=str, default='auto')
-    parser.add_argument('--checkpoint', type=str, default='')
+    #parser.add_argument('--tlm_threshold', help='if TLM logp is lower than this threshold TLM won\'t be interpolated', type=float, default=-20)
+    parser.add_argument('--checkpoint', type=str, default='./checkpoints/pg19checkpoints_dropout10_nths/checkpoint_47_id_29.pt')
     parser.add_argument('--max_utt_gap', type=float, default=10.0)
     parser.add_argument('--saveas', type=str, default='ppls.pkl')
-    parser.add_argument('--stop_at_beam', type=int, default=1000000000000)
+
+    parser.add_argument('--stop_at_beam', type=int, default=5)
+    parser.add_argument('--tlm_scale', type=float, default=1.0)
+
     parser.add_argument('--max_history_len', type=int, default=1000)
-    parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.5)
+    parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.9)
     args = parser.parse_args()
 
     if args.device == 'auto':
@@ -177,7 +172,7 @@ if __name__ == '__main__':
         ckpt = input('Please specify a checkpoint to evaluate: ')
         args.checkpoint = ckpt
 
-
+    wandb.init()
 
     with open(args.hyppkl, 'rb') as f:
         hyps = pkl.load(f)

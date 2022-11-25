@@ -1,0 +1,12 @@
+program: rescore_with_TLM.py
+method: bayes
+metric:
+  name: wer
+  goal: minimize
+parameters:
+  interpolation_weight:
+    min: 0.5
+    max: 0.999
+  tlm_scale:
+    min: 0.5
+    max: 5.0
