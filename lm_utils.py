@@ -125,8 +125,13 @@ def model_pipeline(model, tokenizer, eval=True, device='cpu'):
             else model.get_args(tokens=tokens, mask=mask, lengths=token_lens)
 
 
-def loss_ce(logits, labels, ignore_index=-100):
-    return torch.nn.functional.cross_entropy(rearrange(logits, 'b n c -> b c n'), labels, ignore_index=ignore_index)
+def loss_ce(logits, labels, ignore_index=-100, label_smoothing=0.0):
+    return torch.nn.functional.cross_entropy(
+            rearrange(logits, 'b n c -> b c n'), 
+            labels, 
+            ignore_index = ignore_index,
+            label_smoothing = label_smoothing
+        )
 
 def load_config(config:str):
     return OmegaConf.load(config)

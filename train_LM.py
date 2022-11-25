@@ -128,7 +128,7 @@ def intermediate_loss(loss_fn, model_out, targets):
     return out, torch.mean(interims)
     
 
-def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=None, ema=None):
+def train_one_epoch(args, model, optim, schedular, train_dataloader, device, scaler=None, ema=None):
     model.train()
 
     losses = [] # for storing effective losses
@@ -137,7 +137,12 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
     pbar = tqdm(train_dataloader, total=len(train_dataloader))
     autocast_device = 'cuda' if torch.cuda.is_available() else 'cpu' # for autocast if using mixed precision
 
-    loss_fn = lambda logits, targets: loss_ce(logits=logits, labels=targets, ignore_index=-100)
+    loss_fn = lambda logits, targets: loss_ce(
+            logits=logits, 
+            labels=targets, 
+            ignore_index=-100,
+            label_smoothing=args.label_smoothing
+        )
     #torch.autograd.set_detect_anomaly(True)
 
     for i, batch in enumerate(pbar):
@@ -293,7 +298,7 @@ def main(args):
         epoch = epoch_ + epoch_prev
         #train_dataloader.sampler.set_epoch(epoch)
 
-        loss = train_one_epoch(model, optim, schedular, train_dataloader, device, scaler, ema)          
+        loss = train_one_epoch(args, model, optim, schedular, train_dataloader, device, scaler, ema)          
 
         try: # don't want this to crash if I accidentally delete the schedular config file
             schedular = update_schedular(args, optim, schedular) # allows changing of min n max learning rate during training
@@ -388,7 +393,7 @@ if __name__ == '__main__':
   
     parser.add_argument('--num_workers', type=int, default=1, help='number of workers for dataloader')
     parser.add_argument('--split_speakers', action='store_true', help='if set, will split speaker into multiple utterances')
-
+    parser.add_argument('--label_smoothing', type=float, default=0.0)
 
     parser.add_argument('--project_name', default='deliberation-LM', type=str)
   

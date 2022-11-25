@@ -14,7 +14,8 @@ import multiprocessing
 
 from nemo.collections.asr.metrics.wer import word_error_rate
 from omegaconf.omegaconf import OmegaConf
-from model_utils import load_checkpoint, load_nemo_checkpoint, load_model, load_sc_model, write_to_log, decode_beams_lm
+from model_utils import load_checkpoint, load_nemo_checkpoint, load_model, load_sc_model, write_to_log
+from speachy.asr.decoding.ngram import decode_beams_lm
 import non_iid_dataloader
 
 import pickle as pkl
@@ -60,7 +61,7 @@ def evaluate(args, model, corpus, decoder):
       
         speaker_ids = ["_".join(el[0]) for el in batch['speakers']]
         
-        print(batch['audio_lens'])
+        #print(batch['audio_lens'])
         audio_lengths = batch['audio_lens'].reshape(1).to(device)
         targets = [el[0] for el in batch['text']]
         targets = [el.replace(" '", "'") for el in targets] # change this in training so that it's not needed here but i'll keep it for now

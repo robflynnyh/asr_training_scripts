@@ -21,15 +21,28 @@ durations = [
     0.0,
     15.0,
     30.0,
-    50.0,
+    45.0,
     60.0,
     75.0,
-    100.0,
+    90.0,
+    105.0,
     120.0,
-    140.0,
+    135.0,
+    150.0,
+    165.0,
     180.0,
     200.0,
     250.0,
+    350.0,
+    450.0,
+    550.0,
+    650.0,
+    750.0,
+    850.0,
+    1000.0,
+    1500.0,
+    1750.0,
+    2000.0,
 ]
 
 class argsclass:
@@ -41,9 +54,9 @@ class argsclass:
 @torch.no_grad()
 def main(args):
     device = torch.device(args.device)
-    tokenizer = AutoTokenizer.from_pretrained('facebook/opt-125m')
+    tokenizer = AutoTokenizer.from_pretrained('EleutherAI/gpt-neo-125M')
     corpus = tools.load_corpus()
-    model = AutoModelForCausalLM.from_pretrained('facebook/opt-125m')
+    model = AutoModelForCausalLM.from_pretrained('EleutherAI/gpt-neo-125M')
     model.to(device)
     model.eval()
 
@@ -65,7 +78,7 @@ def main(args):
         samples = niiddl.prepare_samples(
             meetings=meetings, 
             max_duration=duration, 
-            max_allowed_utterance_gap=5.0,
+            max_allowed_utterance_gap=10.0,
         )
         samples = niiddl.get_text(samples) 
 
@@ -76,9 +89,17 @@ def main(args):
         ttl_tokens = 0
         ttl_words = 0
 
+        skipped = 0
         for text_sample in tqdm(samples):
             input_ids = tokenizer(text_sample, return_tensors='pt')
             token_lens = input_ids['input_ids'].shape[1]
+            
+            if token_lens > 2048: ## NEEDS TO BE TOKEN LEVEL
+                skipped += 1
+                continue
+
+
+
             input_ids = lm_utils.batch_to_device(input_ids, device, return_all=True)
             outputs = model(**input_ids)
             logits = outputs.logits
@@ -93,6 +114,7 @@ def main(args):
             ttl_tokens += token_lens 
             ttl_words += len(text_sample.split()) +1 # for the eos token
 
+        print(f'percent skipped: {skipped/len(samples)}')
         if args.token_level:
             ppl = torch.exp(torch.tensor(losses / ttl_tokens))
         else:
@@ -109,8 +131,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--split', type=str, default='test')
     parser.add_argument('--max_len', type=int, default=1862)
-    parser.add_argument('--batch_size', type=int, default=10)
-    parser.add_argument('--device', type=str, default='cpu')
+    parser.add_argument('--batch_size', type=int, default=1)
+    parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--max_gpu_duration', type=float, default=-1)
     parser.add_argument('--checkpoint', type=str, default='')
     parser.add_argument('--shuffle_sentences', action='store_true')

@@ -3,8 +3,7 @@ from omegaconf.omegaconf import OmegaConf
 from einops import rearrange, repeat
 from tqdm import tqdm
 import torch.nn as nn
-from . import DEFAULTS
-from DEFAULTS import get_model_defaults
+from .DEFAULTS import get_model_defaults
 
 
 def load_qknorm_transformer(config:OmegaConf, tokenizer):
