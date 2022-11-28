@@ -190,9 +190,7 @@ class CosineAttention(nn.Module):
     
         '''import pickle as pkl
         with open(f'post_{layer}.pkl', 'wb') as f:
-            pkl.dump(pos, f)'''
-  
-
+            pkl.dump(pos.cpu().detach().numpy(), f)'''
 
         dots += pos
 
