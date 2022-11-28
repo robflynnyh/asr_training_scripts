@@ -42,12 +42,25 @@ class ShiftTokens(nn.Module):
 
 class DynamicPositionBias(nn.Module):
     '''taken From Phil Wang's x-transformers library'''
-    def __init__(self, dim, *, heads, depth, log_distance = False, norm = False):
+    def __init__(
+            self, 
+            dim, *,
+            dim_head, 
+            heads, 
+            depth, 
+            log_distance = False, 
+            norm = False
+        ):
         super().__init__()
         assert depth >= 1, 'depth for dynamic position bias MLP must be greater or equal to 1'
         self.log_distance = log_distance
 
         self.mlp = nn.ModuleList([])
+
+        self.heads = heads
+        
+        self.q_scaler = nn.Linear(dim_head, 1, bias = False)
+        self.k_scaler = nn.Linear(dim_head, 1, bias = False)
 
         self.mlp.append(nn.Sequential(
             nn.Linear(1, dim),
@@ -61,10 +74,11 @@ class DynamicPositionBias(nn.Module):
                 nn.LayerNorm(dim) if norm else nn.Identity(),
                 nn.ReLU()
             ))
+        
 
-        self.mlp.append(nn.Linear(dim, heads))
+        self.mlp.append(nn.Linear(dim, 8))
 
-    def forward(self, n, device, dtype):
+    def forward(self, n, q, k, device, dtype):
 
         # get the (n x n) matrix of distances
         seq_arange = torch.arange(n, device = device)
@@ -79,13 +93,19 @@ class DynamicPositionBias(nn.Module):
         if self.log_distance:
             pos = torch.sign(pos) * torch.log(pos.abs() + 1)  # log of distance is sign(rel_pos) * log(abs(rel_pos) + 1)
 
+  
         for layer in self.mlp:
             pos = layer(pos)
-
+    
         # get position biases        
         bias = pos[indices]
+      
         bias = rearrange(bias, 'i j h -> h i j')
-        return bias
+      
+        q_scaler, k_scaler = self.q_scaler(q).tanh()*1.5 + 1, self.k_scaler(k).tanh()*1.5 + 1
+       
+
+        return bias * q_scaler * k_scaler.transpose(-1, -2)
 
 class ScaledSinuEmbedding(nn.Module):
     '''taken From Phil Wang's x-transformers library'''
@@ -161,13 +181,21 @@ class CosineAttention(nn.Module):
         dots = self._head_proj(dots)
         return dots      
 
-    def attend(self, query, key, value, mask, pos_fn):
+    def attend(self, query, key, value, mask, pos_fn, layer):
         query, key = map(l2norm, (query, key))
         
         dots = einsum('bhid,bhjd->bhij', query, key) * self.temperature
         dots = self.head_proj(dots)
+        pos = pos_fn(dots.shape[-1], query, key, device=dots.device, dtype=dots.dtype)
+    
+        '''import pickle as pkl
+        with open(f'post_{layer}.pkl', 'wb') as f:
+            pkl.dump(pos, f)'''
+  
 
-        dots += pos_fn(dots.shape[-1], device=dots.device, dtype=dots.dtype)
+
+        dots += pos
+
         qkmask = ~mask
         attn_mask = ~(rearrange(qkmask, "b n -> b () n ()") * rearrange(qkmask, "b n -> b () () n"))
     
@@ -183,7 +211,7 @@ class CosineAttention(nn.Module):
         return einsum("bhij,bhjd->bhid", attn, value)
 
 
-    def forward(self, x, pos_fn, mask=None):
+    def forward(self, x, pos_fn, mask, layer):
         assert pos_fn is not None, 'pls provide a position function'
         B, N, C, H, D = *x.shape, self.n_heads, self.head_dim
         #print(x.shape, mask.shape)
@@ -193,7 +221,7 @@ class CosineAttention(nn.Module):
 
         q, k, v = self.qkv(x)
     
-        out = self.attend(q, k, v, mask, pos_fn)
+        out = self.attend(q, k, v, mask, pos_fn, layer)
 
         out = rearrange(out, "b h n d -> b n (h d)")
         out = self.out_proj(out)
@@ -253,6 +281,7 @@ class transformer(nn.Module):
         self.positional_bias = DynamicPositionBias(
             dim = dim // 4,
             heads = heads,
+            dim_head = dim_head,
             depth = 2,
             log_distance = False,
             norm = False
@@ -301,7 +330,7 @@ class transformer(nn.Module):
         for i, (attn, ff) in enumerate(self.layers):
 
             x = self.token_shift(x)
-            x = self.checkpoint(i, attn, x, self.positional_bias, mask) + x
+            x = self.checkpoint(i, attn, x, self.positional_bias, mask, i) + x
             x = self.checkpoint(i, ff, x) + x   
 
             if i < self.depth - 1 and self_condtioning is not None:
@@ -310,7 +339,7 @@ class transformer(nn.Module):
 
         if len(intermediate_logits) > 0: # stack intermediate logits
             intermediate_logits = torch.stack(intermediate_logits, dim=0) # D x B x N x L
-    
+        #exit()
         return x, intermediate_logits
 
 class shared_embedding_output_layer(nn.Module):
