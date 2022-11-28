@@ -44,7 +44,7 @@ model:
       ff_mult: 4
       tie_embedding: false
       checkpoint_every_n: 1
-      shared_kv: false
+      shared_kv: true
 
 
   qknorm_test:

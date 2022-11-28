@@ -19,10 +19,10 @@ durations = [
     0.0,
     15.0,
     30.0,
-    50.0,
+    45.0,
     60.0,
     75.0,
-    100.0,
+    90.0,
     120.0,
     140.0,
     180.0,
@@ -94,7 +94,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml')
+    parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_test.yaml')
     
     parser.add_argument('--max_len', type=int, default=1862)
     parser.add_argument('--batch_size', type=int, default=1)
