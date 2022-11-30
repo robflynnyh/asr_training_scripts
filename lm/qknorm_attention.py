@@ -4,6 +4,7 @@ from einops import rearrange, repeat
 from torch import einsum
 from torch.utils.checkpoint import checkpoint # # gradient/activation checkpointing
 from functools import partial
+from einops.layers.torch import Rearrange
 
 def exists(val):
     return val is not None
@@ -39,13 +40,52 @@ class ShiftTokens(nn.Module):
         x = torch.cat((*segments_to_shift, *rest), dim = -1)
         return self.fn(x, **kwargs)
 
+    
+class CausalConv1d(torch.nn.Conv1d):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 kernel_size,
+                 stride=1,
+                 dilation=1,
+                 groups=1,
+                 bias=True):
+        self.__padding = (kernel_size - 1) * dilation
+
+        super(CausalConv1d, self).__init__(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=self.__padding,
+            dilation=dilation,
+            groups=groups,
+            bias=bias)
+
+    def forward(self, input):
+        result = super(CausalConv1d, self).forward(rearrange(input, 'b c t -> b t c'))
+        if self.__padding != 0:
+            result = result[:, :, :-self.__padding]
+        return result
+
+class CausalMaxPool1d(torch.nn.MaxPool1d):
+    def __init__(
+        self,
+        kernel_size
+    ):
+        self.__padding = kernel_size - 1
+        super(CausalMaxPool1d, self).__init__(kernel_size,stride=1)
+    
+    def forward(self, x):
+        x = torch.nn.functional.pad(x, (self.__padding, 0)) # pad x so it is causal
+        x = super(CausalMaxPool1d, self).forward(x)
+        return x
 
 class DynamicPositionBias(nn.Module):
     '''taken From Phil Wang's x-transformers library'''
     def __init__(
             self, 
             dim, *,
-            dim_head, 
             heads, 
             depth, 
             log_distance = False, 
@@ -58,9 +98,8 @@ class DynamicPositionBias(nn.Module):
         self.mlp = nn.ModuleList([])
 
         self.heads = heads
-        
-        self.q_scaler = nn.Linear(dim_head, 1, bias = False)
-        self.k_scaler = nn.Linear(dim_head, 1, bias = False)
+    
+        #self.sin_scale = nn.Parameter(rearrange((1.25**(torch.arange(8))-0.99), 'h -> h 1 1'))
 
         self.mlp.append(nn.Sequential(
             nn.Linear(1, dim),
@@ -76,14 +115,16 @@ class DynamicPositionBias(nn.Module):
             ))
         
 
-        self.mlp.append(nn.Linear(dim, 8))
+        self.mlp.append(nn.Linear(dim, heads))
 
-    def forward(self, n, q, k, device, dtype):
+    def forward(self, n, device, dtype):
 
         # get the (n x n) matrix of distances
         seq_arange = torch.arange(n, device = device)
         context_arange = torch.arange(n, device = device)
         indices = rearrange(seq_arange, 'i -> i 1') - rearrange(context_arange, 'j -> 1 j')
+        #sin_wavs = torch.sin(rearrange(indices.clone(), 'i j -> () i j') * self.sin_scale) + 1.5 # add 1.5 to make it positive
+        
         indices += (n - 1)
         
         # input to continuous positions MLP
@@ -92,20 +133,15 @@ class DynamicPositionBias(nn.Module):
 
         if self.log_distance:
             pos = torch.sign(pos) * torch.log(pos.abs() + 1)  # log of distance is sign(rel_pos) * log(abs(rel_pos) + 1)
-
   
         for layer in self.mlp:
             pos = layer(pos)
     
         # get position biases        
         bias = pos[indices]
-      
         bias = rearrange(bias, 'i j h -> h i j')
-      
-        q_scaler, k_scaler = self.q_scaler(q).tanh()*1.5 + 1, self.k_scaler(k).tanh()*1.5 + 1
-       
-
-        return bias * q_scaler * k_scaler.transpose(-1, -2)
+  
+        return  bias # * sin_wavs
 
 class ScaledSinuEmbedding(nn.Module):
     '''taken From Phil Wang's x-transformers library'''
@@ -132,6 +168,8 @@ def l2norm(t, groups = 1, dim = -1):
     t = rearrange(t, '... (g d) -> ... g d', g = groups)
     t = F.normalize(t, p = 2, dim = dim)
     return rearrange(t, '... g d -> ... (g d)')
+
+
 
 class CosineAttention(nn.Module):
     def __init__(
@@ -182,15 +220,15 @@ class CosineAttention(nn.Module):
         return dots      
 
     def attend(self, query, key, value, mask, pos_fn, layer):
+        pos = pos_fn
         query, key = map(l2norm, (query, key))
         
         dots = einsum('bhid,bhjd->bhij', query, key) * self.temperature
         dots = self.head_proj(dots)
-        pos = pos_fn(dots.shape[-1], query, key, device=dots.device, dtype=dots.dtype)
     
-        '''import pickle as pkl
+        import pickle as pkl
         with open(f'post_{layer}.pkl', 'wb') as f:
-            pkl.dump(pos.cpu().detach().numpy(), f)'''
+            pkl.dump(pos.cpu().detach().numpy(), f)
 
         dots += pos
 
@@ -217,9 +255,11 @@ class CosineAttention(nn.Module):
         if mask is None:
             mask = torch.zeros(B, N, device=x.device, dtype=torch.bool)
 
+        pos = pos_fn(x.shape[-2], device=x.device, dtype=x.dtype)
+    
         q, k, v = self.qkv(x)
     
-        out = self.attend(q, k, v, mask, pos_fn, layer)
+        out = self.attend(q, k, v, mask, pos, layer)
 
         out = rearrange(out, "b h n d -> b n (h d)")
         out = self.out_proj(out)
@@ -267,9 +307,8 @@ class transformer(nn.Module):
 
         ff_mult = kwargs.get('ff_mult', 4)
         self.checkpoint_every_n = kwargs.get('checkpoint_every_n', 0)
-        self.token_shift = kwargs.get('token_shift', False)
-
-
+        self.token_shift = kwargs.get('token_shift', True)
+     
         self.temperature = nn.Parameter(torch.tensor(temperature), requires_grad=True) if shared_temperture else temperature
     
 
@@ -279,7 +318,6 @@ class transformer(nn.Module):
         self.positional_bias = DynamicPositionBias(
             dim = dim // 4,
             heads = heads,
-            dim_head = dim_head,
             depth = 2,
             log_distance = False,
             norm = False
@@ -323,21 +361,83 @@ class transformer(nn.Module):
         condition = self.training and self.checkpoint_every_n != 0 and layer < self.depth - 1 and layer % self.checkpoint_every_n == 0
         return checkpoint(self.create_custom_forward(module), *args, **kwargs) if condition else module(*args, **kwargs)
 
+    @staticmethod
+    def pad_to_nearest_multiple(x, multiple, mask=None):
+        """
+        Pads a tensor to the nearest multiple of a given number.
+        Args:
+            x: tensor to pad
+            multiple: the multiple to pad to
+            mask: optional mask is padded by the same amount (with 1s)
+        Returns:
+            padded tensor
+        """
+        remainder = x.shape[-2] % multiple
+        if remainder == 0:
+            return x, mask, 0
+        pad = multiple - remainder
+        x = torch.nn.functional.pad(x, (0, 0, 0, pad))
+        if mask is not None:
+            additional_mask = torch.ones(x.shape[0], pad, device=x.device, dtype=torch.bool)
+            mask = torch.cat((mask, additional_mask), dim=1)
+        return x, mask, pad
+
+    @staticmethod
+    def unpad(x, pad, mask=None):
+        if pad == 0:
+            return x, mask
+        return x[:, :-pad], mask[:, :-pad] if mask is not None else None
+
+    @staticmethod
+    def drop_even_odd(x, mask, layer):
+        '''
+        drop even or odd tokens depending on layer 
+        '''
+        if layer % 2 == 0:
+            return x[:, 1::2], mask[:, 1::2]
+        else:
+            return x[:, ::2], mask[:, ::2]
+
+    @staticmethod
+    def update_even_odd(x, dropped_x, layer):
+        '''
+        update with residual after attention over even or odd tokens
+        '''
+        if layer % 2 == 0:
+            x[:, 1::2] = dropped_x + x[:, 1::2]
+        else:
+            x[:, ::2] = dropped_x + x[:, ::2]
+        return x
+
+
     def forward(self, x, mask=None, self_condtioning=None):
         intermediate_logits = []
+        x, mask, pad = self.pad_to_nearest_multiple(x, 2, mask)
+
         for i, (attn, ff) in enumerate(self.layers):
 
-            x = self.token_shift(x)
-            x = self.checkpoint(i, attn, x, self.positional_bias, mask, i) + x
+            # shift tokens every other layer
+            if i % 2 == 0:
+                x = self.token_shift(x)
+      
+            x_dropped, mask_dropped = self.drop_even_odd(x, mask, i)
+        
+            x_dropped = self.checkpoint(i, attn, x_dropped, self.positional_bias, mask_dropped, i) 
+            x = x.clone() # make sure we don't modify the original tensor
+        
+            x = self.update_even_odd(x, x_dropped, i)
+          
             x = self.checkpoint(i, ff, x) + x   
 
-            if i < self.depth - 1 and self_condtioning is not None:
-                x, logits = self_condtioning(x)
+            if i < self.depth - 1 and self_condtioning is not None and 1==2:
+                x, logits = self_condtioning(self.unpad(x, pad)[0])
+                x, _, _ = self.pad_to_nearest_multiple(x, 2)
                 intermediate_logits.append(logits)
 
         if len(intermediate_logits) > 0: # stack intermediate logits
             intermediate_logits = torch.stack(intermediate_logits, dim=0) # D x B x N x L
         #exit()
+        x = self.unpad(x, pad)[0]
         return x, intermediate_logits
 
 class shared_embedding_output_layer(nn.Module):

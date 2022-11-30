@@ -73,6 +73,7 @@ def eval_corpus_perplexity(model, dataloader, device, word_level=False):
     text_lens = []
     for batch in pbar:
         b_text = batch['text']
+        
         #print(b_text)
         b_text_lens = [len(t.split()) + 1  for t in b_text] # + 1 for <eos> ! split() ignores whitespaces which is what we want
         text_lens.extend(b_text_lens)

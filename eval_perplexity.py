@@ -16,12 +16,6 @@ import lm_utils
 import os 
 
 durations = [
-    0.,
-    15.,
-    30.,
-    50.,
-    60.,
-    75.,
     100.0,
     120.0,
     140.0,
