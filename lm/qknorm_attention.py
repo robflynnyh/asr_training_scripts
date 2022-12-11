@@ -326,6 +326,29 @@ class shared_embedding_output_layer(nn.Module):
     def forward(self, x):
         return F.linear(x, weight=self.embedding_layer.weight, bias=self.bias if self.use_bias else None)
 
+class frac_emb_table(nn.Module):
+    def __init__(
+        self,
+        model_dim: int = 256,
+        discrete_positions: int = 250,
+    ):
+        super().__init__()
+        self.discrete_positions = discrete_positions
+        self.pembs = torch.empty(discrete_positions, model_dim)
+        nn.init.uniform_(self.pembs, a=-1e-4, b=1e-4)
+
+    def forward(self, seq_len: int, device: torch.device):
+        '''gets the fractional position for each token in the sequence i.e 500/1000 token gets position 0.5 so discete positions / 2
+        '''
+        num_tokens = self.discrete_positions
+        tksi = (torch.arange(seq_len) / (seq_len-1)) * num_tokens
+        tksi = tksi.unsqueeze(1).expand(-1, num_tokens).to(device)
+        stdev = torch.tensor([num_tokens / seq_len])
+        stdev = stdev.unsqueeze(1).expand_as(tksi).to(device)
+        dist = torch.distributions.normal.Normal(tksi, stdev).log_prob(torch.arange(num_tokens).to(device)).exp().unsqueeze(-1)
+        pembs = self.pembs.unsqueeze(0).to(device)
+        pos = (dist * pembs).sum(dim=1)
+        return pos
 
 class transformer_lm(nn.Module):
     def __init__(
@@ -341,7 +364,7 @@ class transformer_lm(nn.Module):
         shared_temperture=True,
         self_conditioning=False,
         intermediate_loss=True,
-        use_abs_pos=False,
+        use_abs_pos=True,
         **kwargs
     ):
         super().__init__()
@@ -353,8 +376,13 @@ class transformer_lm(nn.Module):
 
         self.use_abs_pos = use_abs_pos
         if self.use_abs_pos:
-            self.abs_pos_fn = ScaledSinuEmbedding(dim=dim)
-        self.abs_pos = lambda x: x + self.abs_pos_fn(x) if self.use_abs_pos else x
+            self.abs_pos_fn = frac_emb_table(
+                model_dim=dim,
+                discrete_positions=250,
+            )
+        self.abs_pos = lambda x: x + self.abs_pos_fn(x.shape[1], x.device)  if self.use_abs_pos else x
+
+    
 
         if self_conditioning:
             self.reprojection_layer = nn.Linear(vocab_size, dim)

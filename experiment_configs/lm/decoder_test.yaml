@@ -43,7 +43,7 @@ model:
     kwargs:
       ff_mult: 4
       tie_embedding: false
-      checkpoint_every_n: 1
+      checkpoint_every_n: 2
       shared_kv: true
 
 
