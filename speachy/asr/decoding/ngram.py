@@ -19,6 +19,7 @@ def decode_beams_lm(logits_list, decoder, beam_width=100, encoded_lengths=None):
     for logits, length in zip(logits_list, encoded_lengths):
         beams = decoder.decode_beams(
             logits = logits[:length],
+            beam_prune_logp = -10000, # no pruning
             beam_width = beam_width,
             prune_history = False
         )

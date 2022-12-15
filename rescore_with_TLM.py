@@ -140,28 +140,33 @@ def main(args, hypothesis):
 
     hypothesis = compute_all_ppls(args, model, tokenizer, hypothesis)
     wer = compute_rescore_wer(hypothesis)
-    wandb.log({'wer': wer})
+    if not args.no_wandb:
+        wandb.log({'wer': wer})
+    else:
+        with open(args.saveas, 'wb') as f:
+            pkl.dump(hypothesis, f)
+    print(f'WER: {wer}')
 
-    '''
-    with open(args.saveas, 'wb') as f:
-        pkl.dump(hypothesis, f)
-    '''
+    
+    
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hyppkl", type=str, default='nbests.pkl')
+    parser.add_argument("--hyppkl", type=str, default='tedlium_hyps.pkl')
     parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml')
     parser.add_argument('--device', type=str, default='auto')
     #parser.add_argument('--tlm_threshold', help='if TLM logp is lower than this threshold TLM won\'t be interpolated', type=float, default=-20)
-    parser.add_argument('--checkpoint', type=str, default='./checkpoints/pg19checkpoints_dropout10_nths/checkpoint_47_id_29.pt')
+    parser.add_argument('--checkpoint', type=str, default='./checkpoints/pg19checkpoints_dropout10_nths/pg_19_ft_checkpoint_47_id_91.pt')
     parser.add_argument('--max_utt_gap', type=float, default=10.0)
     parser.add_argument('--saveas', type=str, default='ppls.pkl')
 
-    parser.add_argument('--stop_at_beam', type=int, default=5)
+    parser.add_argument('--stop_at_beam', type=int, default=2)
     parser.add_argument('--tlm_scale', type=float, default=1.0)
 
-    parser.add_argument('--max_history_len', type=int, default=1000)
+    parser.add_argument('--max_history_len', type=int, default=100)
     parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.9)
+
+    parser.add_argument('--no_wandb', action='store_true')
     args = parser.parse_args()
 
     if args.device == 'auto':
@@ -172,7 +177,8 @@ if __name__ == '__main__':
         ckpt = input('Please specify a checkpoint to evaluate: ')
         args.checkpoint = ckpt
 
-    wandb.init()
+    if not args.no_wandb:
+        wandb.init()
 
     with open(args.hyppkl, 'rb') as f:
         hyps = pkl.load(f)
