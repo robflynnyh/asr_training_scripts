@@ -19,15 +19,25 @@ def order_recordings_by_start_time(hypothesis):
         hypothesis[key] = sorted(hypothesis[key], key=lambda x: x['meta_data']['timings']['segment_start'])
     return hypothesis
 
+'''def interpolate(am_score, lm_score, alpha):
+    #
+    am_score: Acoustic model score (log probability)
+    lm_score: Language model score (log probability)
+    alpha: Interpolation weight
+    we compute this in log space
+    #
+    log_alpha = torch.log(torch.tensor(alpha))
+    log_1_minus_alpha = torch.log(torch.tensor(1-alpha))
+    interped = torch.logaddexp(am_score + log_1_minus_alpha, lm_score + log_alpha)
+    #print(f'am_score: {am_score}, lm_score: {lm_score}, alpha: {alpha}, interped: {interped}')
+    return interped'''
+
 def interpolate(am_score, lm_score, alpha):
     '''
     am_score: Acoustic model score (log probability)
     lm_score: Language model score (log probability)
     alpha: Interpolation weight
-    we compute this in log space
+  
     '''
-    log_alpha = torch.log(torch.tensor(alpha))
-    log_1_minus_alpha = torch.log(torch.tensor(1-alpha))
-    interped = torch.logaddexp(am_score + log_1_minus_alpha, lm_score + log_alpha)
-    #print(f'am_score: {am_score}, lm_score: {lm_score}, alpha: {alpha}, interped: {interped}')
+    interped = am_score + alpha * lm_score
     return interped

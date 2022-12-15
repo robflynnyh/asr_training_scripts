@@ -94,7 +94,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_test.yaml')
+    parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml')
     
     parser.add_argument('--max_len', type=int, default=1862)
     parser.add_argument('--batch_size', type=int, default=1)
@@ -104,7 +104,7 @@ if __name__ == '__main__':
     parser.add_argument('--token_level', action='store_true')
     parser.add_argument('--split', type=str, default='test')
     
-    parser.add_argument('--checkpoint', type=str, default='')
+    parser.add_argument('--checkpoint', type=str, default='./checkpoints/pg19checkpoints_dropout10_nths/pg_19_ft_checkpoint_47_id_91.pt')
     args = parser.parse_args()
 
     if args.device == 'auto':

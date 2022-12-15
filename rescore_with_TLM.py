@@ -34,11 +34,14 @@ class argsclass:
 def get_text_probability(args, model, tokenizer, text, history):
     device = torch.device(args.device)
     tokens, history_tokens = tokenizer.text_to_ids(text), tokenizer.text_to_ids(history)
-    tokens, history_tokens = torch.tensor(tokens).unsqueeze(0), torch.tensor(history_tokens).unsqueeze(0)
+    token_prev = tokens
+    tokens, history_tokens = torch.tensor(tokens).unsqueeze(0).long(), torch.tensor(history_tokens).unsqueeze(0).long()
+  
     history_len = len(history_tokens[0])
     if history_len > 0:
         tokens = torch.cat((history_tokens, tokens), dim=1)
 
+  
     token_lens = torch.tensor([len(tokens[0])]) + 1 # add 1 for the <bos> token
     tokens, token_lens = tokens.to(device), token_lens.to(device)
     tokens = lm_utils.add_bos(tokens, bos_token_id=0)
@@ -52,9 +55,15 @@ def get_text_probability(args, model, tokenizer, text, history):
         else model.get_args(tokens=tokens, mask=mask, lengths=token_lens)
 
     logits = model(**model_args)
-    if history_len > 0:
-        logits = logits[:, history_len:-1, :] #-1 to remove the <eos> token
-        targets = targets[:, history_len:-1]
+   
+    # remove first and last token
+    logits = logits[:, history_len + 1:-1, :]
+    targets = targets[:, history_len + 1:-1]
+
+    # remove eos/bos from probabilities
+    logits = logits[:, :, 1:]
+    # shift targets by 1 (no more eos/bos)
+    targets -= 1
 
     # temperature
     logits = logits / args.temperature
@@ -65,13 +74,17 @@ def get_text_probability(args, model, tokenizer, text, history):
     #print(tokenizer.ids_to_text(logprobs.argmax(dim=-1)[0,:50].tolist()), '- :SPAACE: -', tokenizer.ids_to_text(targets[0,:50].tolist()))
     logprobs = logprobs.squeeze(0).gather(1, targets.squeeze(0).unsqueeze(1))
 
-    logprobs = logprobs.sum()
+    # get total logprob
+    logprobs = logprobs.sum() 
+    
     return logprobs.to('cpu')
 
 def remove_multiple_spaces(text):
     return ' '.join(text.split())
 
 def trim_history(history, max_len):
+    if max_len == 0:
+        return ''
     history = history.split()
     if len(history) > max_len:
         history = history[-max_len:]
@@ -89,6 +102,7 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps):
         history_text = '' if prev_end - segment_start > args.max_utt_gap else history_text  # reset history if gap between utterances is too large
         history_text = trim_history(history_text, max_history)
         best_log_p, best_hyp = float('-inf'), ''
+        print(f'History: {history_text}\n')
         print(f'Target: {utt["targets"][0]}\n')
         for idx in utt['beams'][0].keys():
             if idx >= max_beam:
@@ -97,19 +111,34 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps):
             hyptext = cur['text']
             AM_prob = torch.tensor(cur['score'])
             prob = get_text_probability(args, model, tokenizer, hyptext, history_text)
+            if prob.isnan() or prob > -15 or len(history_text.strip()) == 0:
+                prob = AM_prob
             cur['tlm_prob'] = prob
             cur['rescore_lp'] = interpolate(AM_prob, prob, args.interpolation_weight)
+            print(f'AM prob: {AM_prob}, LM prob: {prob} (interpolated: {cur["rescore_lp"]})')
         
             print(f'beam: {idx}, prob: {cur["rescore_lp"]}, hyp: {hyptext}\n history len: {len(history_text.split())}')
+
             if cur['rescore_lp'] > best_log_p:
                 best_log_p = cur['rescore_lp']
                 best_hyp = hyptext
-        if utt['beams'][0][0]['text'] != best_hyp:
-            print(f'{["-"]*200}BEST HYP: {best_hyp}{"-"*200}')
+
+       
+        original_wer = word_error_rate([utt['targets'][0]], [utt['beams'][0][0]['text']])
+        rescored_wer = word_error_rate([utt['targets'][0]], [best_hyp])
+        print(f'\n\nOriginal WER: {original_wer}, rescored WER: {rescored_wer}\n\n')
+        if rescored_wer < original_wer:
+            print(f'{["-"]*10} WER IMPROVEMENT {["-"]*10}\n\n')
+        elif rescored_wer == original_wer:
+            print('')
+        else:
+            print(f'{["-"]*10} WER DEGRADATION {["-"]*10}\n\n')
+
         utt['best_logp'] = best_log_p
         utt['best_hyp'] = best_hyp
         print(f'best logp: {best_log_p}')
         history_text += ' ' + best_hyp
+        #history_text += ' ' + utt['beams'][0][0]['text']
         history_text = remove_multiple_spaces(history_text)
         prev_end = segment_end
     return recording_hyps
@@ -157,14 +186,15 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, default='auto')
     #parser.add_argument('--tlm_threshold', help='if TLM logp is lower than this threshold TLM won\'t be interpolated', type=float, default=-20)
     parser.add_argument('--checkpoint', type=str, default='./checkpoints/pg19checkpoints_dropout10_nths/pg_19_ft_checkpoint_47_id_91.pt')
-    parser.add_argument('--max_utt_gap', type=float, default=10.0)
+    parser.add_argument('--max_utt_gap', type=float, default=5.0)
     parser.add_argument('--saveas', type=str, default='ppls.pkl')
 
-    parser.add_argument('--stop_at_beam', type=int, default=2)
-    parser.add_argument('--tlm_scale', type=float, default=1.0)
+    parser.add_argument('--stop_at_beam', type=int, default=10)
+    parser.add_argument('--temperature', type=float, default=1.0)
 
-    parser.add_argument('--max_history_len', type=int, default=100)
-    parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.9)
+
+    parser.add_argument('--max_history_len', type=int, default=500)
+    parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.15)
 
     parser.add_argument('--no_wandb', action='store_true')
     args = parser.parse_args()

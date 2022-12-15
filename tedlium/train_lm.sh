@@ -1,7 +1,7 @@
 echo '<<< TRAINING AUTOREGRESSIVE TLM >>>'
 
 python train_LM.py --checkpoint '' \
-    --checkpoint_dir './checkpoint_qknorm_hierarchy_do50' \
+    --checkpoint_dir './checkpoint_test' \
     --model_config './lm/decoder_test.yaml' \
     --min_lr 1e-6 \
     --max_lr 3.25e-4 \
@@ -9,12 +9,12 @@ python train_LM.py --checkpoint '' \
     --accumulate_gradients 3 \
     --clip_gradients \
     --clip_gradients_value 10 \
-    --micro_batch_duration 120 \
+    --micro_batch_duration 0 \
     --micro_batch_number 10 \
     --max_allowed_utterance_gap 3.0 \
     --wandb_id '' \
     --save_top_k 1 \
-    --schedular_data 'qknorm_hierarchy_do50.json' 
+    --schedular_data 'test.json' 
     
 
 

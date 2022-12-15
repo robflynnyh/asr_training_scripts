@@ -5,8 +5,8 @@ metric:
   goal: minimize
 parameters:
   interpolation_weight:
-    min: 0.5
-    max: 0.999
-  tlm_scale:
-    min: 0.5
-    max: 5.0
+    min: 0.01
+    max: 0.6
+  temperature:
+    min: 0.7
+    max: 1.2
