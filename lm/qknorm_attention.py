@@ -150,7 +150,7 @@ class CosineAttention(nn.Module):
             self.qkv_proj = nn.Linear(n_feats, 3 * n_heads * head_dim, bias=bias)
             self.qkv = lambda x: rearrange(self.qkv_proj(x), "b n (h d qkv) -> qkv b h n d", qkv=3, h=n_heads, d=head_dim)
         else:
-            self.q_proj, self.kv_proj = nn.Linear(n_feats, n_heads*head_dim), nn.Linear(n_feats, 2*head_dim) #[nn.Linear(n_feats, el, bias=bias) for el in [n_heads * head_dim, 2 * head_dim]]
+            self.q_proj, self.kv_proj = [nn.Linear(n_feats, el, bias=bias) for el in [n_heads * head_dim, 2 * head_dim]]
             map_q, map_kv = lambda q: rearrange(q, 'b n (h d) -> b h n d', h=n_heads), lambda kv: rearrange(kv, 'b n (kv d) -> kv b () n d', kv=2, d=head_dim)
             self.qkv = lambda x: (map_q(self.q_proj(x)), *map_kv(self.kv_proj(x)))
 
