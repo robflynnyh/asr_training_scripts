@@ -5,6 +5,47 @@ from torch import einsum
 from torch.utils.checkpoint import checkpoint # # gradient/activation checkpointing
 from functools import partial
 
+class CausalConv1d(torch.nn.Conv1d):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 kernel_size,
+                 stride=1,
+                 dilation=1,
+                 groups=1,
+                 bias=True):
+        self.__padding = (kernel_size - 1) * dilation
+
+        super(CausalConv1d, self).__init__(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=self.__padding,
+            dilation=dilation,
+            groups=groups,
+            bias=bias)
+
+    def forward(self, input):
+        result = super(CausalConv1d, self).forward(input)
+        if self.__padding != 0:
+            return result[:, :, :-self.__padding]
+        return result
+
+class ConditionalPositions(nn.Module):
+    def __init__(self, dim_in, dim_out):
+        super().__init__()
+        self.pos_conv = CausalConv1d(dim_in, dim_out, 15, 1, 1, groups=dim_in)
+ 
+
+    def forward(self, x):
+        x = rearrange(x, 'b n d -> b d n')
+        x = self.pos_conv(x)
+        x = rearrange(x, 'b d n -> b n d')
+        return x 
+        
+
+
 def exists(val):
     return val is not None
 
@@ -149,7 +190,7 @@ class CosineAttention(nn.Module):
             self.qkv_proj = nn.Linear(n_feats, 3 * n_heads * head_dim, bias=bias)
             self.qkv = lambda x: rearrange(self.qkv_proj(x), "b n (h d qkv) -> qkv b h n d", qkv=3, h=n_heads, d=head_dim)
         else:
-            self.q_proj, self.kv_proj = [nn.Linear(n_feats, el, bias=bias) for el in [n_heads * head_dim, 2 * head_dim]]
+            self.q_proj, self.kv_proj = nn.Linear(n_feats, n_heads*head_dim), nn.Linear(n_feats, 2*head_dim) #[nn.Linear(n_feats, el, bias=bias) for el in [n_heads * head_dim, 2 * head_dim]]
             map_q, map_kv = lambda q: rearrange(q, 'b n (h d) -> b h n d', h=n_heads), lambda kv: rearrange(kv, 'b n (kv d) -> kv b () n d', kv=2, d=head_dim)
             self.qkv = lambda x: (map_q(self.q_proj(x)), *map_kv(self.kv_proj(x)))
 
@@ -221,6 +262,7 @@ class GLU(nn.Module):
 
 
 
+
 class transformer(nn.Module):
     def __init__(
             self, 
@@ -257,6 +299,7 @@ class transformer(nn.Module):
             log_distance = False,
             norm = False
         )
+        
 
         self.token_shifter = lambda x: x
         if self.token_shift:
@@ -275,7 +318,8 @@ class transformer(nn.Module):
                     dropout=dropout,
                     **kwargs
                 )),
-                PreNorm(dim, self.ff(dim, mult=ff_mult))
+                PreNorm(dim, self.ff(dim, mult=ff_mult)),
+                PreNorm(dim, ConditionalPositions(dim, dim))
             ]))
 
     @staticmethod
@@ -298,9 +342,10 @@ class transformer(nn.Module):
 
     def forward(self, x, mask=None, self_condtioning=None):
         intermediate_logits = []
-        for i, (attn, ff) in enumerate(self.layers):
+        for i, (attn, ff, pos) in enumerate(self.layers):
 
             x = self.token_shift(x)
+            x = self.checkpoint(i, pos, x) + x
             x = self.checkpoint(i, attn, x, self.positional_bias, mask) + x
             x = self.checkpoint(i, ff, x) + x   
 
@@ -359,6 +404,8 @@ class transformer_lm(nn.Module):
         if self_conditioning:
             self.reprojection_layer = nn.Linear(vocab_size, dim)
 
+     
+
         self.layers = transformer(
             dim = dim, 
             depth = depth, 
@@ -376,6 +423,9 @@ class transformer_lm(nn.Module):
         print('Tie embedding:', self.tie_embedding) if self.tie_embedding else None
  
         self.embedding = nn.Embedding(vocab_size, dim)
+        nn.init.uniform_(self.embedding.weight, a=-1e-4, b=1e-4)
+        self.post_emb_ln = nn.LayerNorm(dim)
+
         self.to_logits = shared_embedding_output_layer(self.embedding) if self.tie_embedding else nn.Linear(dim, vocab_size)
         
 
@@ -395,7 +445,9 @@ class transformer_lm(nn.Module):
 
     def forward(self, x, mask=None):
         x = self.embedding(x)
+        x = self.post_emb_ln(x)
         x = self.abs_pos(x)
+  
         x, interim_logits = self.layers(x, mask=~mask if mask is not None else None, self_condtioning=self.self_condition_fn())
         x = self.post_norm(x)
         x = self.to_logits(x)
