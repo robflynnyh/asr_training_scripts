@@ -27,6 +27,8 @@ def decode_beams_lm(logits_list, decoder, beam_width=100, encoded_lengths=None):
         for i, beam in enumerate(beams):
             decoded[i] = {
                 'text': beam[0],
+                'ngram_score': beam[1],
+                'am_score': beam[-2],
                 'score': beam[-1]
             }
         decoded_data.append(decoded)
