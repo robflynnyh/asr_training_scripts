@@ -24,6 +24,9 @@ from speachy.rescoring.tools import (
 )
 import wandb
 
+from transformers import GPTNeoXForCausalLM, AutoTokenizer
+
+
 from compute_rescore_wer import main as compute_rescore_wer
 
 class argsclass:
@@ -32,6 +35,42 @@ class argsclass:
 
 @torch.no_grad()
 def get_text_probability(args, model, tokenizer, text, history):
+    device = torch.device(args.device)
+    loss_fct = torch.nn.NLLLoss(ignore_index=-100, reduction='none')
+    loss_log_softmax = torch.nn.LogSoftmax(dim=-1)
+    if len(history) > 0:
+        history = tokenizer.bos_token + history
+    else:
+        text = tokenizer.bos_token + text
+    tokens, history_tokens = tokenizer(text, return_tensors='pt'), tokenizer(history, return_tensors='pt')
+    token_prev = tokens
+    history_len = len(history_tokens['input_ids'][0])
+    if history_len > 0:
+        tokens['input_ids'] = torch.cat((history_tokens['input_ids'].long(), tokens['input_ids'].long()), dim=1)
+        tokens['attention_mask'] = torch.cat((history_tokens['attention_mask'].long(), tokens['attention_mask'].long()), dim=1)
+    token_lens = torch.tensor([len(tokens['input_ids'][0])])
+    tokens['input_ids'], tokens['attention_mask'], token_lens = tokens['input_ids'].to(device), tokens['attention_mask'].to(device), token_lens.to(device)
+    outputs = model(**tokens)
+    logits = outputs.logits
+    labels = tokens['input_ids'].clone()
+    if history_len > 0:
+        labels = labels[:, history_len:]
+        logits = logits[:, history_len - 1:, :]
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = labels.contiguous()
+    else:
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+    shift_probs = loss_log_softmax(shift_logits)
+    loss = loss_fct(shift_probs.view(-1, shift_probs.size(-1)), shift_labels.view(-1))
+    loss = loss.view(shift_labels.size()).squeeze()
+    #print(loss.shape, token_lens, tokens['input_ids'].shape, history_len)
+    tx_prob = loss.sum().cpu()
+    print(tx_prob)
+    return tx_prob
+
+@torch.no_grad()
+def get_text_probability__(args, model, tokenizer, text, history):
     device = torch.device(args.device)
     tokens, history_tokens = tokenizer.text_to_ids(text), tokenizer.text_to_ids(history)
     token_prev = tokens
@@ -74,10 +113,8 @@ def get_text_probability(args, model, tokenizer, text, history):
     #print(tokenizer.ids_to_text(logprobs.argmax(dim=-1)[0,:50].tolist()), '- :SPAACE: -', tokenizer.ids_to_text(targets[0,:50].tolist()))
     logprobs = logprobs.squeeze(0).gather(1, targets.squeeze(0).unsqueeze(1))
 
-    length_penalty = logprobs.shape[0] * (1*args.length_penalty)
-    print('length_penalty', length_penalty)
     # get total logprob
-    logprobs = logprobs.sum() + length_penalty
+    logprobs = logprobs.sum() 
     
     return logprobs.to('cpu')
 
@@ -114,8 +151,7 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps):
             AM_prob = torch.tensor(cur['am_score']) * args.am_scale
             NGRAM_prob = torch.tensor(cur['ngram_score'])
             prob = get_text_probability(args, model, tokenizer, hyptext, history_text) * args.tlm_scale
-            if prob.isnan():
-                prob = AM_prob
+       
             cur['tlm_prob'] = prob
             cur['rescore_lp'] = interpolate(
                 am_score=AM_prob,
@@ -131,11 +167,9 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps):
                 best_log_p = cur['rescore_lp']
                 best_hyp = hyptext
 
-        target_txt = utt['targets'][0]
-        top_hyp = utt['beams'][0][0]['text']
-        original_wer = word_error_rate([target_txt], [top_hyp])
-        rescored_wer = word_error_rate([target_txt], [best_hyp])
-        print(f'{target_txt} : {top_hyp} : {best_hyp}')
+       
+        original_wer = word_error_rate([utt['targets'][0]], [utt['beams'][0][0]['text']])
+        rescored_wer = word_error_rate([utt['targets'][0]], [best_hyp])
         print(f'\n\nOriginal WER: {original_wer}, rescored WER: {rescored_wer}\n\n')
         if rescored_wer < original_wer:
             print(f'{["-"]*10} WER IMPROVEMENT {["-"]*10}\n\n')
@@ -163,14 +197,16 @@ def compute_all_ppls(args, model, tokenizer, hypothesis):
 
 def main(args, hypothesis):
     device = torch.device(args.device)
-    config = lm_utils.load_config(args.config)
-    tokenizer_path = os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
-    tokenizer = tools.load_tokenizer(tokenizer_path)
-    
-    model = lm_utils.load_model(config, tokenizer, max_len=torch.inf)
-    epoch, val_loss  = model_utils.load_checkpoint(args=argsclass(**{'checkpoint': args.checkpoint}), model=model, force_cpu=True)
-    modeltype = config['model']['modeltype']
-    print(f'Loaded model {args.checkpoint} with epoch {epoch} and val_loss {val_loss}\n Model type: {modeltype}')
+    revision="step143000"
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model,
+        revision=revision,
+    )
+    model = GPTNeoXForCausalLM.from_pretrained(
+        args.model,
+        revision=revision,
+    )
+    print(f'Loaded model {args.model}')
     model.to(device)
     model.eval()
 
@@ -192,22 +228,20 @@ def main(args, hypothesis):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--hyppkl", type=str, default='tedlium_hyps.pkl')
-    parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml')
     parser.add_argument('--device', type=str, default='auto')
     #parser.add_argument('--tlm_threshold', help='if TLM logp is lower than this threshold TLM won\'t be interpolated', type=float, default=-20)
-    parser.add_argument('--checkpoint', type=str, default='./checkpoints/pg19checkpoints_dropout10_nths/pg_19_ft_checkpoint_47_id_91.pt')
+    parser.add_argument('-model','--model', type=str, default='EleutherAI/pythia-19m')
     parser.add_argument('--max_utt_gap', type=float, default=10.0)
     parser.add_argument('--saveas', type=str, default='ppls.pkl')
 
-    parser.add_argument('--length_penalty', type=float, default=0.3)
-    parser.add_argument('--stop_at_beam', type=int, default=25)
+    parser.add_argument('--stop_at_beam', type=int, default=5)
     parser.add_argument('--tlm_scale', type=float, default=0.4) # linearly scale TLM logp by this factor
-    parser.add_argument('--am_scale', type=float, default=0.75) # linearly scale AM logp by this factor')
-    parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.8) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
-    parser.add_argument('--temperature', type=float, default=0.9) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
+    parser.add_argument('--am_scale', type=float, default=1.0) # linearly scale AM logp by this factor')
+    parser.add_argument('-alpha','--interpolation_weight', type=float, default=1.0) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
+    parser.add_argument('--temperature', type=float, default=1.0) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
 
 
-    parser.add_argument('--max_history_len', type=int, default=800)
+    parser.add_argument('--max_history_len', type=int, default=350)
     
 
     parser.add_argument('--no_wandb', action='store_true')
@@ -216,10 +250,7 @@ if __name__ == '__main__':
     if args.device == 'auto':
         args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    if args.checkpoint == '':
-        print('No checkpoint specified...')
-        ckpt = input('Please specify a checkpoint to evaluate: ')
-        args.checkpoint = ckpt
+ 
 
     if not args.no_wandb:
         wandb.init()

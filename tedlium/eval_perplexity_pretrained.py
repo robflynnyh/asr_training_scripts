@@ -14,6 +14,8 @@ import lm_utils
 import os 
 import numpy as np
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import GPTNeoXForCausalLM
+
 
 import non_iid_dataloader as niiddl
 
@@ -54,9 +56,18 @@ class argsclass:
 @torch.no_grad()
 def main(args):
     device = torch.device(args.device)
-    tokenizer = AutoTokenizer.from_pretrained('EleutherAI/gpt-neo-125M')
+    #tokenizer = AutoTokenizer.from_pretrained('EleutherAI/gpt-neo-125M')
+    tokenizer = AutoTokenizer.from_pretrained(
+        "EleutherAI/pythia-19m",
+        revision="step143000"
+    )
     corpus = tools.load_corpus()
-    model = AutoModelForCausalLM.from_pretrained('EleutherAI/gpt-neo-125M')
+    #model = AutoModelForCausalLM.from_pretrained('EleutherAI/gpt-neo-125M')
+    model = GPTNeoXForCausalLM.from_pretrained(
+        "EleutherAI/pythia-19m",
+        revision="step143000"
+    )
+
     model.to(device)
     model.eval()
 
@@ -89,14 +100,10 @@ def main(args):
         ttl_tokens = 0
         ttl_words = 0
 
-        skipped = 0
         for text_sample in tqdm(samples):
-            input_ids = tokenizer(text_sample, return_tensors='pt')
+            txt = tokenizer.bos_token + text_sample
+            input_ids = tokenizer(txt, return_tensors='pt')
             token_lens = input_ids['input_ids'].shape[1]
-            
-            if token_lens > 2048: ## NEEDS TO BE TOKEN LEVEL
-                skipped += 1
-                continue
 
 
 
@@ -104,6 +111,7 @@ def main(args):
             outputs = model(**input_ids)
             logits = outputs.logits
             labels = input_ids['input_ids']
+           
             lm_logits = logits
             shift_logits = lm_logits[:, :-1, :].contiguous()
             shift_labels = labels[:, 1:].contiguous()
@@ -111,10 +119,9 @@ def main(args):
             loss = loss.view(shift_labels.size())
             losses += loss.sum().item()
             #print(token_lens)
-            ttl_tokens += token_lens 
-            ttl_words += len(text_sample.split()) +1 # for the eos token
+            ttl_tokens += token_lens - 1 # -1 for bos token
+            ttl_words += len(text_sample.split()) 
 
-        print(f'percent skipped: {skipped/len(samples)}')
         if args.token_level:
             ppl = torch.exp(torch.tensor(losses / ttl_tokens))
         else:

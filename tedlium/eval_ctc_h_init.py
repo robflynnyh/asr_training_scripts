@@ -75,6 +75,7 @@ def evaluate(args, model, corpus, decoder):
         targets = [el[0] for el in batch['text']]
         targets = [el.replace(" '", "'") for el in targets] # change this in training so that it's not needed here
 
+     
         model_out = model.forward(
             input_signal=audios, 
             input_signal_length=audio_lengths,
@@ -161,7 +162,7 @@ if __name__ == '__main__':
     parser.add_argument('--beam_size', type=int, default=100)
     parser.add_argument('-lm', '--language_model', type=str, default='', help='arpa n-gram model for decoding')#./ngrams/3gram-6mix.arpa
     parser.add_argument('--split', type=str, default='test')
-    parser.add_argument('--alpha', type=float, default=0.6)
+    parser.add_argument('--alpha', type=float, default=0.5)
     parser.add_argument('--beta', type=float, default=0.8)
     parser.add_argument('--sweep', action='store_true', help='run wandb search for language model weight')
     parser.add_argument('-nsc','--not_self_conditioned', action='store_true', help='use for non self-conditioned models')

@@ -23,7 +23,7 @@ from speachy.rescoring.tools import (
         interpolate
 )
 import wandb
-
+import torch.nn.functional as F
 from compute_rescore_wer import main as compute_rescore_wer
 
 class argsclass:
@@ -31,34 +31,40 @@ class argsclass:
         self.__dict__.update(kwargs)
 
 @torch.no_grad()
-def get_text_probability(args, model, tokenizer, text, history):
+def get_text_probability(args, model, tokenizer, text, history, cached_kvs=None, first_token_prob=None):
+    '''
+    args: argsclass
+    model: causal language model
+    tokenizer: sentencepiece tokenizer
+    history: no longer used :P
+    cached_kvs: cached keys and values to speed up inference
+    first_token_prob: if there is history this is the probability of the first token in the current sequence, taken from the previous sequence
+    '''
     device = torch.device(args.device)
-    tokens, history_tokens = tokenizer.text_to_ids(text), tokenizer.text_to_ids(history)
+    tokens = tokenizer.text_to_ids(text)
     token_prev = tokens
-    tokens, history_tokens = torch.tensor(tokens).unsqueeze(0).long(), torch.tensor(history_tokens).unsqueeze(0).long()
+    tokens = torch.tensor(tokens).unsqueeze(0).long()
   
-    history_len = len(history_tokens[0])
-    if history_len > 0:
-        tokens = torch.cat((history_tokens, tokens), dim=1)
+    toremove = 1 if cached_kvs is None else 0
 
-  
-    token_lens = torch.tensor([len(tokens[0])]) + 1 # add 1 for the <bos> token
-    tokens, token_lens = tokens.to(device), token_lens.to(device)
-    tokens = lm_utils.add_bos(tokens, bos_token_id=0)
+    tokens = tokens.to(device)
+    tokens = lm_utils.add_bos(tokens, bos_token_id=0) if cached_kvs is None else tokens # add bos token if there is no history
     targets = tokens.clone()
     targets[:, :-1] = tokens[:, 1:]
-    targets = lm_utils.add_eos(targets, eos_id=0, token_lens=token_lens)
-    mask = lm_utils.token_lens_to_mask(token_lens)
-    targets = lm_utils.mark_padding(targets, mask, pad_id=-100)
+  
+    mask = None
 
-    model_args = {'x': tokens, 'mask': mask} if isfalse(callable(getattr(model, 'get_args', False))) \
-        else model.get_args(tokens=tokens, mask=mask, lengths=token_lens)
-
-    logits = model(**model_args)
+    model_args = {'x': tokens, 'mask': mask}
+    logits, cached_kvs = model(**model_args, cache_kvs=cached_kvs)
    
     # remove first and last token
-    logits = logits[:, history_len + 1:-1, :]
-    targets = targets[:, history_len + 1:-1]
+    logits, next_token_logits = logits[:, :-1, :], logits[:, -1, :]
+    targets = targets[:, toremove:]
+
+    if first_token_prob is not None:
+        logits = torch.cat([first_token_prob.unsqueeze(0), logits], dim=1)
+  
+    
 
     # remove eos/bos from probabilities
     logits = logits[:, :, 1:]
@@ -74,23 +80,29 @@ def get_text_probability(args, model, tokenizer, text, history):
     #print(tokenizer.ids_to_text(logprobs.argmax(dim=-1)[0,:50].tolist()), '- :SPAACE: -', tokenizer.ids_to_text(targets[0,:50].tolist()))
     logprobs = logprobs.squeeze(0).gather(1, targets.squeeze(0).unsqueeze(1))
 
-    length_penalty = logprobs.shape[0] * (1*args.length_penalty)
-    print('length_penalty', length_penalty)
     # get total logprob
-    logprobs = logprobs.sum() + length_penalty
+    logprobs = logprobs.sum() 
     
-    return logprobs.to('cpu')
+    return logprobs.to('cpu'), cached_kvs, next_token_logits
 
 def remove_multiple_spaces(text):
     return ' '.join(text.split())
 
-def trim_history(history, max_len):
-    if max_len == 0:
-        return ''
-    history = history.split()
-    if len(history) > max_len:
-        history = history[-max_len:]
-    return ' '.join(history)
+def trim_history(cached_kv, max_len):
+    if max_len == 0 or cached_kv is None:
+        return cached_kv
+    if cached_kv['keys'].shape[-2] > max_len:
+        # trim but keep bos token at the beginning
+        bos_k, bos_v = cached_kv['keys'][:, :, :, 0, :].unsqueeze(-2), cached_kv['values'][:, :, :, 0, :].unsqueeze(-2)
+        cached_kv['keys'] = cached_kv['keys'][:, :, :, -max_len:, :]
+        cached_kv['values'] = cached_kv['values'][:, :, :, -max_len:, :]
+        print(bos_k.shape, cached_kv['keys'].shape)
+        cached_kv['keys'] = torch.cat([bos_k, cached_kv['keys']], dim=-2)
+        cached_kv['values'] = torch.cat([bos_v, cached_kv['values']], dim=-2)
+
+    return cached_kv
+
+
 
 
 def compute_beam_ppls(args, model, tokenizer, recording_hyps):
@@ -98,14 +110,19 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps):
     max_history = args.max_history_len
     history_text = ''
     prev_end = None
+    cached_kvs = None
+    next_token_prob = None
     for utt in tqdm(recording_hyps):
         segment_start, segment_end = utt['meta_data']['timings'].values()
         prev_end = segment_start if prev_end is None else prev_end
         history_text = '' if prev_end - segment_start > args.max_utt_gap else history_text  # reset history if gap between utterances is too large
-        history_text = trim_history(history_text, max_history)
+        cached_kvs = None if history_text == '' else cached_kvs
+        next_token_prob = None if history_text == '' else next_token_prob
+        cached_kvs = trim_history(cached_kvs, max_history)
         best_log_p, best_hyp = float('-inf'), ''
-        print(f'History: {history_text}\n')
+        print(f'History: {history_text[-250:]}\n')
         print(f'Target: {utt["targets"][0]}\n')
+        cached_kvs_tmp, next_token_prob_tmp = None, None
         for idx in utt['beams'][0].keys():
             if idx >= max_beam:
                 break
@@ -113,29 +130,38 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps):
             hyptext = cur['text']
             AM_prob = torch.tensor(cur['am_score']) * args.am_scale
             NGRAM_prob = torch.tensor(cur['ngram_score'])
-            prob = get_text_probability(args, model, tokenizer, hyptext, history_text) * args.tlm_scale
-            if prob.isnan():
+
+            if hyptext != '':
+                prob, cached_kvs_l, next_token_prob_l = get_text_probability(args, model, tokenizer, hyptext, history_text, cached_kvs=cached_kvs, first_token_prob=next_token_prob)
+            else:
+                prob = F.log_softmax(next_token_prob_l, dim=-1)[0, 0].cpu()
+
+            if idx == 0:
+                assert hyptext != '', 'fix this'
+                cached_kvs_tmp, next_token_prob_tmp = cached_kvs_l, next_token_prob_l
+            prob *= args.tlm_scale
+
+            if prob.isnan() or len(history_text.strip()) == 0:
                 prob = AM_prob
             cur['tlm_prob'] = prob
             cur['rescore_lp'] = interpolate(
-                am_score=AM_prob,
-                ngram_score=NGRAM_prob,
+                am_score=prob,
+                ngram_score=prob,
                 lm_score=prob,
                 alpha=args.interpolation_weight
             )
             #print(f'AM prob: {AM_prob}, LM prob: {prob} (interpolated: {cur["rescore_lp"]})')
-        
-            print(f'beam: {idx}, prob: {cur["rescore_lp"]}, hyp: {hyptext}\n history len: {len(history_text.split())}')
+            history_len = None if cached_kvs is None else cached_kvs['keys'].shape[-2]
+            print(f'beam: {idx}, prob: {cur["rescore_lp"]}, hyp: {hyptext}\n history len: {history_len}\n')
 
             if cur['rescore_lp'] > best_log_p:
                 best_log_p = cur['rescore_lp']
                 best_hyp = hyptext
+        cached_kvs, next_token_prob = cached_kvs_tmp, next_token_prob_tmp
 
-        target_txt = utt['targets'][0]
-        top_hyp = utt['beams'][0][0]['text']
-        original_wer = word_error_rate([target_txt], [top_hyp])
-        rescored_wer = word_error_rate([target_txt], [best_hyp])
-        print(f'{target_txt} : {top_hyp} : {best_hyp}')
+       
+        original_wer = word_error_rate([utt['targets'][0]], [utt['beams'][0][0]['text']])
+        rescored_wer = word_error_rate([utt['targets'][0]], [best_hyp])
         print(f'\n\nOriginal WER: {original_wer}, rescored WER: {rescored_wer}\n\n')
         if rescored_wer < original_wer:
             print(f'{["-"]*10} WER IMPROVEMENT {["-"]*10}\n\n')
@@ -199,15 +225,14 @@ if __name__ == '__main__':
     parser.add_argument('--max_utt_gap', type=float, default=10.0)
     parser.add_argument('--saveas', type=str, default='ppls.pkl')
 
-    parser.add_argument('--length_penalty', type=float, default=0.3)
-    parser.add_argument('--stop_at_beam', type=int, default=25)
+    parser.add_argument('--stop_at_beam', type=int, default=3)
     parser.add_argument('--tlm_scale', type=float, default=0.4) # linearly scale TLM logp by this factor
-    parser.add_argument('--am_scale', type=float, default=0.75) # linearly scale AM logp by this factor')
-    parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.8) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
-    parser.add_argument('--temperature', type=float, default=0.9) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
+    parser.add_argument('--am_scale', type=float, default=1.0) # linearly scale AM logp by this factor')
+    parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.6) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
+    parser.add_argument('--temperature', type=float, default=1.0) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
 
 
-    parser.add_argument('--max_history_len', type=int, default=800)
+    parser.add_argument('--max_history_len', type=int, default=350)
     
 
     parser.add_argument('--no_wandb', action='store_true')
