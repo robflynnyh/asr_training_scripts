@@ -153,7 +153,7 @@ if __name__ == '__main__':
 
     parser.add_argument('-nsc','--not_self_conditioned', action='store_true', help='use for non self-conditioned models')
 
-    parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=10.0, help='max allowed gap between utterances in seconds')
+    parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=3.0, help='max allowed gap between utterances in seconds')
 
 
     parser.add_argument('-gap','--gap', default=0.1, type=float, help='gap between utterances when concatenating')

@@ -162,15 +162,30 @@ class CosineAttention(nn.Module):
         dots = self._head_proj(dots)
         return dots      
 
-    def attend(self, query, key, value, mask, pos_fn):
+    def attend(self, query, key, value, mask, pos_fn, cached_k, cached_v):
         query, key = map(l2norm, (query, key))
+        has_cache = cached_k is not None and cached_v is not None
+        if has_cache:
+            key = torch.cat([cached_k, key], dim=-2)
+            value = torch.cat([cached_v, value], dim=-2)
+
         
         dots = einsum('bhid,bhjd->bhij', query, key) * self.temperature
         dots = self.head_proj(dots)
+        print(dots.shape,'dots shape')
 
-        dots += pos_fn(dots.shape[-1], device=dots.device, dtype=dots.dtype)
+        pos = pos_fn(dots.shape[-1], device=dots.device, dtype=dots.dtype)
+       
+        if has_cache:
+            pos = pos[:, -dots.shape[-2]:, :]
+     
+        dots += pos
         qkmask = ~mask
-        attn_mask = ~(rearrange(qkmask, "b n -> b () n ()") * rearrange(qkmask, "b n -> b () () n"))
+        # no padding used if using cached states (should implment at some point)
+        if has_cache and not qkmask.any(): # check if any padding is used
+            raise NotImplementedError("Padding is not implemented for cached states (sorry :P)")
+           
+        attn_mask = ~(rearrange(qkmask, "b n -> b () n ()") * rearrange(qkmask, "b n -> b () () n")) if not has_cache else torch.zeros(dots.shape[-2], dots.shape[-1], device=dots.device).bool()
     
         if self.causal: # create a regular causal mask
             causal_mask = torch.ones(dots.shape[-2], dots.shape[-1], device=dots.device).triu(1).bool()
@@ -181,11 +196,16 @@ class CosineAttention(nn.Module):
         attn = self.activation(dots)
      
         attn = self.dropout(attn)
-        return einsum("bhij,bhjd->bhid", attn, value)
+        return einsum("bhij,bhjd->bhid", attn, value), key, value
 
 
-    def forward(self, x, pos_fn, mask=None):
+    def forward(self, x, pos_fn, layer, mask=None, cache_kvs=False):
         assert pos_fn is not None, 'pls provide a position function'
+
+        cached_k, cached_v = None, None
+        if cache_kvs != False and cache_kvs != None:
+            cached_k, cached_v = cache_kvs['keys'][layer], cache_kvs['values'][layer]
+
         B, N, C, H, D = *x.shape, self.n_heads, self.head_dim
         #print(x.shape, mask.shape)
 
@@ -194,11 +214,12 @@ class CosineAttention(nn.Module):
 
         q, k, v = self.qkv(x)
     
-        out = self.attend(q, k, v, mask, pos_fn)
+        out, k, v = self.attend(q, k, v, mask, pos_fn, cached_k, cached_v)
 
         out = rearrange(out, "b h n d -> b n (h d)")
         out = self.out_proj(out)
-        return out
+
+        return (out, k, v) if cache_kvs != False else (out, None, None)
 
 class PreNorm(nn.Module):
     def __init__(self, dim, fn):
@@ -299,12 +320,20 @@ class transformer(nn.Module):
         condition = self.training and self.checkpoint_every_n != 0 and layer < self.depth - 1 and layer % self.checkpoint_every_n == 0
         return checkpoint(self.create_custom_forward(module), *args, **kwargs) if condition else module(*args, **kwargs)
 
-    def forward(self, x, mask=None, self_condtioning=None):
+    def forward(self, x, mask=None, self_condtioning=None, **kwargs):
         intermediate_logits = []
+        cache_kvs = kwargs.get('cache_kvs', False)
+        cached_keys, cached_values = [], []
+
         for i, (attn, ff) in enumerate(self.layers):
 
             x = self.token_shift(x)
-            x = self.checkpoint(i, attn, x, self.positional_bias, mask) + x
+            x_o, ck, cv = self.checkpoint(i, attn, x, self.positional_bias, i, mask, cache_kvs)
+            x = x + x_o # residual connection
+
+            if cache_kvs != False:
+                cached_keys.append(ck), cached_values.append(cv)
+
             x = self.checkpoint(i, ff, x) + x   
 
             if i < self.depth - 1 and self_condtioning is not None:
@@ -314,7 +343,12 @@ class transformer(nn.Module):
         if len(intermediate_logits) > 0: # stack intermediate logits
             intermediate_logits = torch.stack(intermediate_logits, dim=0) # D x B x N x L
     
-        return x, intermediate_logits
+        if cache_kvs != False: # stack cached keys and values
+            cached_keys = torch.stack(cached_keys, dim=0) # D x B x N x L
+            cached_values = torch.stack(cached_values, dim=0) # D x B x N x L
+        cached_kvs = {'keys': cached_keys, 'values': cached_values} 
+
+        return x, intermediate_logits, cached_kvs
 
 class shared_embedding_output_layer(nn.Module):
     '''Pass a embedding layer and then use this module as the output layer'''
@@ -399,12 +433,12 @@ class transformer_lm(nn.Module):
         return self_condition if (self.self_conditioning or self.intermediate_loss) and self.training else None
 
 
-    def forward(self, x, mask=None):
+    def forward(self, x, mask=None, **kwargs):
         x = self.embedding(x)
         x = self.abs_pos(x)
   
-        x, interim_logits = self.layers(x, mask=~mask if mask is not None else None, self_condtioning=self.self_condition_fn())
+        x, interim_logits, cached_kvs = self.layers(x, mask=~mask if mask is not None else None, self_condtioning=self.self_condition_fn(), **kwargs)
         x = self.post_norm(x)
         x = self.to_logits(x)
-
-        return  { 'out': x, 'interim_logits': interim_logits } if self.training else x
+        out = x if cached_kvs is None else (x, cached_kvs)
+        return  { 'out': x, 'interim_logits': interim_logits, 'cached_kvs': cached_kvs } if self.training else out
