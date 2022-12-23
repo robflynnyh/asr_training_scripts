@@ -43,7 +43,7 @@ class ShiftTokens(nn.Module):
 
 class DynamicPositionBias(nn.Module):
     '''taken From Phil Wang's x-transformers library'''
-    def __init__(self, dim, *, heads, depth, log_distance = False, norm = False):
+    def __init__(self, dim, *, out_dim, heads, depth, log_distance = False, norm = False):
         super().__init__()
         assert depth >= 1, 'depth for dynamic position bias MLP must be greater or equal to 1'
         self.log_distance = log_distance
@@ -63,7 +63,8 @@ class DynamicPositionBias(nn.Module):
                 nn.ReLU()
             ))
 
-        self.mlp.append(nn.Linear(dim, heads))
+        self.calc_dim_decay = nn.Linear(dim, out_dim)
+        self.calc_head_decay = nn.Linear(dim, heads)
 
     def forward(self, n, device, dtype):
 
@@ -82,10 +83,15 @@ class DynamicPositionBias(nn.Module):
 
         for layer in self.mlp:
             pos = layer(pos)
-
+        dim_decay = self.calc_dim_decay(pos)
+        head_decay = self.calc_head_decay(pos)
+      
+        pos = rearrange(dim_decay, 'i j -> i j ()') * rearrange(head_decay, 'i j -> i () j')
+  
         # get position biases        
         bias = pos[indices]
-        bias = rearrange(bias, 'i j h -> h i j')
+       
+        bias = rearrange(bias, 'i j d h -> h i j d')
         return bias
 
 class ScaledSinuEmbedding(nn.Module):
@@ -155,6 +161,7 @@ class CosineAttention(nn.Module):
             self.qkv = lambda x: (map_q(self.q_proj(x)), *map_kv(self.kv_proj(x)))
 
         self.out_proj = nn.Linear(n_heads * head_dim, n_feats, bias=bias)
+
     
     def head_proj(self, dots):
         if not self.talking_heads:
@@ -168,20 +175,33 @@ class CosineAttention(nn.Module):
         dots = einsum('bhid,bhjd->bhij', query, key) * self.temperature
         dots = self.head_proj(dots)
 
-        dots += pos_fn(dots.shape[-1], device=dots.device, dtype=dots.dtype)
+        pos = pos_fn(dots.shape[-1], device=dots.device, dtype=dots.dtype)
+        '''
+        import pickle as pkl
+        with open('pos.pkl', 'wb') as f:
+            pkl.dump(pos.cpu().numpy(), f)
+        exit()
+        '''
+        dots = dots.unsqueeze(-1) + pos # pos bias is B,H,I,J,D
         qkmask = ~mask
         attn_mask = ~(rearrange(qkmask, "b n -> b () n ()") * rearrange(qkmask, "b n -> b () () n"))
     
         if self.causal: # create a regular causal mask
-            causal_mask = torch.ones(dots.shape[-2], dots.shape[-1], device=dots.device).triu(1).bool()
+            causal_mask = torch.ones(dots.shape[-3], dots.shape[-2], device=dots.device).triu(1).bool()
             attn_mask = torch.logical_or(attn_mask, causal_mask)
-        
-        dots.masked_fill_(attn_mask, -torch.finfo(dots.dtype).max)
     
-        attn = self.activation(dots)
-     
+        dots.masked_fill_(attn_mask.unsqueeze(-1), -torch.finfo(dots.dtype).max)
+        dots = rearrange(dots, 'b h i j d -> b h d i j')
+        attn = self.activation(dots) # across second last dim
         attn = self.dropout(attn)
-        return einsum("bhij,bhjd->bhid", attn, value)
+        attn = rearrange(attn, 'b h d i j -> b h i j d')
+                
+        '''import pickle as pkl
+        with open('attn.pkl', 'wb') as f:
+            pkl.dump(attn.cpu().numpy(), f)
+        '''
+        
+        return einsum("bhijd,bhjd->bhid", attn, value)
 
 
     def forward(self, x, pos_fn, mask=None):
@@ -255,6 +275,7 @@ class transformer(nn.Module):
         self.positional_bias = DynamicPositionBias(
             dim = dim // 4,
             heads = heads,
+            out_dim = dim_head,
             depth = 2,
             log_distance = False,
             norm = False
@@ -310,6 +331,8 @@ class transformer(nn.Module):
             if i < self.depth - 1 and self_condtioning is not None:
                 x, logits = self_condtioning(x)
                 intermediate_logits.append(logits)
+            if i == 4000:
+                exit()
 
         if len(intermediate_logits) > 0: # stack intermediate logits
             intermediate_logits = torch.stack(intermediate_logits, dim=0) # D x B x N x L

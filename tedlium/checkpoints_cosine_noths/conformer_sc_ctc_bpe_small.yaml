@@ -80,7 +80,7 @@ model:
 
     # Multi-headed Attention Module's params
     self_attention_model: cosine # rel_pos or abs_pos
-    talking_heads: false # no improvement from this
+    talking_heads: false
     n_heads: 8 # may need to be lower for smaller d_models
     # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
     att_context_size: [-1, -1] # -1 means unlimited context

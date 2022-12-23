@@ -9,7 +9,7 @@ python train_LM.py --checkpoint '' \
     --accumulate_gradients 10\
     --clip_gradients \
     --clip_gradients_value 15 \
-    --micro_batch_duration 90 \
+    --micro_batch_duration 20 \
     --micro_batch_number 3 \
     --max_allowed_utterance_gap 10.0 \
     --wandb_id '' \
