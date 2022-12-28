@@ -1,4 +1,5 @@
 from . import (
     models,
-    tools
+    tools,
+    scripts,
 )
