@@ -327,4 +327,3 @@ def get_data_loader(
         batch_size=batch_size,
         collate_fn=collate_batch_handler(text_only=text_only) 
     )
-
