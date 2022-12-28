@@ -62,8 +62,8 @@ class DynamicPositionBias(nn.Module):
                 nn.LayerNorm(dim) if norm else nn.Identity(),
                 nn.ReLU()
             ))
-
-        self.calc_dim_decay = nn.Linear(dim, out_dim)
+       
+        self.per_dim_scalers = nn.Parameter(torch.ones(out_dim) + torch.randn(out_dim) * 0.01, requires_grad = True)
         self.calc_head_decay = nn.Linear(dim, heads)
 
     def forward(self, n, device, dtype):
@@ -83,16 +83,63 @@ class DynamicPositionBias(nn.Module):
 
         for layer in self.mlp:
             pos = layer(pos)
-        dim_decay = self.calc_dim_decay(pos)
-        head_decay = self.calc_head_decay(pos)
+        pos = self.calc_head_decay(pos)
+        pos = pos.unsqueeze(-1) * self.per_dim_scalers
+        print(self.per_dim_scalers)
       
-        pos = rearrange(dim_decay, 'i j -> i j ()') * rearrange(head_decay, 'i j -> i () j')
-  
         # get position biases        
         bias = pos[indices]
        
-        bias = rearrange(bias, 'i j d h -> h i j d')
+        bias = rearrange(bias, 'i j h d -> h i j d')
         return bias
+
+class __DynamicPositionBias(nn.Module):
+    '''taken From Phil Wang's x-transformers library'''
+    def __init__(self, dim, *, heads, depth, log_distance = False, norm = False):
+        super().__init__()
+        assert depth >= 1, 'depth for dynamic position bias MLP must be greater or equal to 1'
+        self.log_distance = log_distance
+
+        self.mlp = nn.ModuleList([])
+
+        self.mlp.append(nn.Sequential(
+            nn.Linear(1, dim),
+            nn.LayerNorm(dim) if norm else nn.Identity(),
+            nn.ReLU()
+        ))
+
+        for _ in range(depth - 1):
+            self.mlp.append(nn.Sequential(
+                nn.Linear(dim, dim),
+                nn.LayerNorm(dim) if norm else nn.Identity(),
+                nn.ReLU()
+            ))
+
+        self.mlp.append(nn.Linear(dim, heads))
+
+    def forward(self, n, device, dtype):
+
+        # get the (n x n) matrix of distances
+        seq_arange = torch.arange(n, device = device)
+        context_arange = torch.arange(n, device = device)
+        indices = rearrange(seq_arange, 'i -> i 1') - rearrange(context_arange, 'j -> 1 j')
+        indices += (n - 1)
+        
+        # input to continuous positions MLP
+        pos = torch.arange(-n + 1, n, device = device, dtype = dtype)
+        pos = rearrange(pos, '... -> ... 1')
+
+        if self.log_distance:
+            pos = torch.sign(pos) * torch.log(pos.abs() + 1)  # log of distance is sign(rel_pos) * log(abs(rel_pos) + 1)
+
+        for layer in self.mlp:
+            pos = layer(pos)
+
+        # get position biases        
+        bias = pos[indices]
+        bias = rearrange(bias, 'i j h -> h i j')
+        return bias
+
 
 class ScaledSinuEmbedding(nn.Module):
     '''taken From Phil Wang's x-transformers library'''
@@ -169,6 +216,27 @@ class CosineAttention(nn.Module):
         dots = self._head_proj(dots)
         return dots      
 
+    def __attend(self, query, key, value, mask, pos_fn):
+        query, key = map(l2norm, (query, key))
+        
+        dots = einsum('bhid,bhjd->bhij', query, key) * self.temperature
+        dots = self.head_proj(dots)
+
+        dots += pos_fn(dots.shape[-1], device=dots.device, dtype=dots.dtype)
+        qkmask = ~mask
+        attn_mask = ~(rearrange(qkmask, "b n -> b () n ()") * rearrange(qkmask, "b n -> b () () n"))
+    
+        if self.causal: # create a regular causal mask
+            causal_mask = torch.ones(dots.shape[-2], dots.shape[-1], device=dots.device).triu(1).bool()
+            attn_mask = torch.logical_or(attn_mask, causal_mask)
+        
+        dots.masked_fill_(attn_mask, -torch.finfo(dots.dtype).max)
+    
+        attn = self.activation(dots)
+     
+        attn = self.dropout(attn)
+        return einsum("bhij,bhjd->bhid", attn, value)
+
     def attend(self, query, key, value, mask, pos_fn):
         query, key = map(l2norm, (query, key))
         
@@ -196,10 +264,10 @@ class CosineAttention(nn.Module):
         attn = self.dropout(attn)
         attn = rearrange(attn, 'b h d i j -> b h i j d')
                 
-        '''import pickle as pkl
+        import pickle as pkl
         with open('attn.pkl', 'wb') as f:
             pkl.dump(attn.cpu().numpy(), f)
-        '''
+        
         
         return einsum("bhijd,bhjd->bhid", attn, value)
 
@@ -272,6 +340,7 @@ class transformer(nn.Module):
         self.intermediate_loss = intermediate_loss
 
         self.depth = depth
+        
         self.positional_bias = DynamicPositionBias(
             dim = dim // 4,
             heads = heads,
@@ -280,6 +349,15 @@ class transformer(nn.Module):
             log_distance = False,
             norm = False
         )
+        '''
+        self.positional_bias = DynamicPositionBias(
+            dim = dim // 4,
+            heads = heads,
+            depth = 2,
+            log_distance = False,
+            norm = False
+        )
+        '''
         
 
         self.token_shifter = lambda x: x
@@ -331,7 +409,8 @@ class transformer(nn.Module):
             if i < self.depth - 1 and self_condtioning is not None:
                 x, logits = self_condtioning(x)
                 intermediate_logits.append(logits)
-            if i == 4000:
+
+            if i == 4:
                 exit()
 
         if len(intermediate_logits) > 0: # stack intermediate logits

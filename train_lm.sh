@@ -14,7 +14,7 @@ python train_LM.py --checkpoint '' \
     --max_allowed_utterance_gap 10.0 \
     --wandb_id '' \
     --save_top_k 1 \
-    --schedular_data './checkpoints/lm_test.json' \
+    --schedular_data './checkpoints/lm_test2.json' \
     --project_name 'deliberation-LM' \
     --label_smoothing 0.0 \
     
