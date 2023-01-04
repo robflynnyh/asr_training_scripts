@@ -241,6 +241,7 @@ class transformer(nn.Module):
 
         ff_mult = kwargs.get('ff_mult', 4)
         self.checkpoint_every_n = kwargs.get('checkpoint_every_n', 0)
+        #print(f'checkpoint_every_n: {self.checkpoint_every_n}')
         self.token_shift = kwargs.get('token_shift', False)
 
 

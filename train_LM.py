@@ -1,40 +1,38 @@
 import argparse
-from random import sample
 import torch
 
 import tools
 import non_iid_dataloader
 import os
 from tqdm import tqdm
-import numpy as np
 import wandb
-from torch.optim.lr_scheduler import CyclicLR
 from os.path import join
 
-from lm_utils import (
-    get_max_length,
-    batch_to_device,
-    load_model,
-    loss_ce,
+from speachy.utils.general import (
     load_config,
+    load_checkpoint,
+    save_checkpoint,
+    save_schedular_data,
+    write_to_log,
+    draw_text,
+)
+from speachy.lm.tools.train import (
+    loss_ce,
+    batch_to_device,
     token_lens_to_mask,
     add_bos,
     add_eos,
     mark_padding
 )
 
-from model_utils import (
-    write_to_log, 
-    draw_text, 
-    load_schedular_data, 
-    save_schedular_data,
-    save_checkpoint,
-    load_checkpoint
-)
+from speachy.utils.misc import add_common_args
 
+from speachy.lm.tools.loading import autoload
+from speachy.utils.general.training_loop import optimizer, update_schedular
+
+from speachy.utils.helpers import  exists, isfalse, istrue
 from contextlib import nullcontext
 
-import torch_optimizer
 from torch_ema import ExponentialMovingAverage
 # gradscaler
 from torch.cuda.amp import GradScaler   
@@ -42,42 +40,6 @@ from torch.cuda.amp import GradScaler
 
 
 INTERPOLATE = 0.5
-
-
-def exists(var):
-    return var is not None
-
-def isfalse(var):
-    return var == False
-def istrue(var):
-    return var == True
-
-
-def update_schedular(args, optim, schedular):
-    if schedular is None:
-        return None
-    max_lr, min_lr, step_size = load_schedular_data(args)
-    if max_lr != args.max_lr or min_lr != args.min_lr or step_size != args.step_size:
-        print('Updating schedular')
-        args.max_lr = max_lr
-        args.min_lr = min_lr
-        args.step_size = step_size
-        schedular = CyclicLR(optim, base_lr=args.min_lr, max_lr=args.max_lr, step_size_up=args.step_size, step_size_down=args.step_size*2, mode='triangular', cycle_momentum=False)
-    return schedular
-
-
-def optimizer(model, args):
-    implemented_optimizers = ['adamw','madgrad']
-    if args.optimizer_type == 'adamw':
-        optimizer = torch.optim.AdamW(model.parameters(), betas=(0.9, 0.98), weight_decay=1e-6, lr=args.min_lr)
-    elif args.optimizer_type == 'madgrad':
-        optimizer = torch_optimizer.MADGRAD(model.parameters(), lr=args.min_lr, momentum=0.9, weight_decay=1e-6, eps=1e-6)
-    else:
-        raise ValueError(f'Unknown optimizer type: {args.optimizer_type}, implemented optimizers: {implemented_optimizers}')
-
-    schedular = CyclicLR(optimizer, base_lr=args.min_lr, max_lr=args.max_lr, step_size_up=args.step_size, step_size_down=args.step_size*4, mode='triangular', cycle_momentum=False)
-
-    return optimizer, schedular
 
 @torch.no_grad()
 def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
@@ -238,7 +200,7 @@ def main(args):
         max_duration=args.micro_batch_duration, 
         num_workers=args.num_workers, 
         batch_size=args.micro_batch_number, 
-        concat_samples=False,
+        concat_samples=True,
         split_speakers=args.split_speakers,
         gap=0.0,
         speaker_gap=0.0,
@@ -253,9 +215,8 @@ def main(args):
     if args.run_test == True:
         test_dataloader = get_dl('test')
 
-    max_len = max(get_max_length(train_dataloader), get_max_length(dev_dataloader)) + 1
-    args.max_tokens = max_len
-    model = load_model(config=config, tokenizer=tokenizer, max_len=max_len)
+    args.max_tokens = -1
+    model = autoload(config=config, tokenizer=tokenizer)
     model.tokenizer = tokenizer
     
     model.to(device)
@@ -352,51 +313,28 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser() 
-    parser.add_argument('--load_pretrained', action='store_true')
-    parser.add_argument('--pretrained', type=str, default='stt_en_conformer_ctc_small')
     parser.add_argument('--run_test', action='store_true')
-  
-    parser.add_argument('--tokenizer', type=str, default='./tokenizer_spe_bpe_v128', help='path to tokenizer dir')
-    parser.add_argument('--epochs', type=int, default=5000)
 
     parser.add_argument('--log_file', type=str, default='log.txt')
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints')
     parser.add_argument('--checkpoint', type=str, default='')
     parser.add_argument('--model_config', type=str, default='')
 
-    parser.add_argument('--save_top_k', type=int, default=5)
-
-    parser.add_argument('--accumulate_gradients', type=int, default=4)
-
-    parser.add_argument('--min_lr', type=float, default=1e-5)
-    parser.add_argument('--max_lr', type=float, default=8e-3)
-    parser.add_argument('--step_size', type=int, default=400)
-
     parser.add_argument('--schedular_data', type=str, default='./schedular_data_ctc.json')
-    parser.add_argument('--wandb', action='store_false')
-    parser.add_argument('--wandb_id', type=str, default='', help='Provide this if you want to resume a previous run')
-    parser.add_argument('--mixed_precision', action='store_true')
-    parser.add_argument('--no_load_optim', action='store_true', help='if set, will not load optimizer state from checkpoint')
-
-    parser.add_argument('--clip_gradients', action='store_true')
-    parser.add_argument('--clip_gradients_value', type=float, default=10.0)
 
     parser.add_argument('--micro_batch_duration', type=int, default=45, help='batch size for non-i.i.d micro batches')
     parser.add_argument('--micro_batch_number', type=int, default=1, help='number of i.i.d micro batches per mini-batch')
 
-    parser.add_argument('--optimizer_type', type=str, default='madgrad', help='type of optimizer to use')
-
     parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=3.0, help='max allowed gap between utterances in seconds')
-    
     
     parser.add_argument('--single_speaker_with_gaps', action='store_true', help='if set, utterances will contain 1 speaker and additional gaps of speaker_gap will be added if there is a speaker change between two utternces of the same speaker')
   
-    parser.add_argument('--num_workers', type=int, default=1, help='number of workers for dataloader')
     parser.add_argument('--split_speakers', action='store_true', help='if set, will split speaker into multiple utterances')
     parser.add_argument('--label_smoothing', type=float, default=0.0)
 
     parser.add_argument('--project_name', default='deliberation-LM', type=str)
   
+    parser = add_common_args(parser)
 
     args = parser.parse_args()
 
@@ -414,10 +352,7 @@ if __name__ == '__main__':
         print(f'A schedular data with the name {args.schedular_data} already exists, please delete it if you want to start a new run')
         exit()
 
-    if args.load_pretrained == True:
-        if args.pretrained == '':
-            raise ValueError('Please provide a pretrained model')
-    elif args.model_config == '':
+    if args.model_config == '':
         raise ValueError('Please provide a model config, or load a pretrained model')
 
 

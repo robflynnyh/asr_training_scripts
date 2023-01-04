@@ -7,6 +7,7 @@ from lhotse import CutSet
 from tqdm import tqdm
 import torch
 from collections import OrderedDict
+import argparse
 
 
 
@@ -93,3 +94,27 @@ def draw_text(text):
     print(f'\n \n ------------------------------------------------- ')
     print(f' ----------------- {text} ----------------- ')
     print(f' ------------------------------------------------- \n \n')
+
+
+def add_common_args(parser:argparse.ArgumentParser):
+    parser.add_argument('--epochs', type=int, default=5000)
+    parser.add_argument('--save_top_k', type=int, default=6)
+
+    parser.add_argument('--accumulate_gradients', type=int, default=4)
+    parser.add_argument('--min_lr', type=float, default=1e-5)
+    parser.add_argument('--max_lr', type=float, default=8e-3)
+    parser.add_argument('--step_size', type=int, default=400)
+
+    parser.add_argument('--wandb', action='store_false')
+    parser.add_argument('--wandb_id', type=str, default='', help='Provide this if you want to resume a previous run')
+
+    parser.add_argument('--mixed_precision', action='store_true')
+    parser.add_argument('--no_load_optim', action='store_true', help='if set, will not load optimizer state from checkpoint')
+
+    parser.add_argument('--clip_gradients', action='store_true')
+    parser.add_argument('--clip_gradients_value', type=float, default=10.0)
+
+    parser.add_argument('--optimizer_type', type=str, default='madgrad', help='type of optimizer to use')
+    parser.add_argument('--num_workers', type=int, default=1, help='number of workers for dataloader')
+
+    return parser

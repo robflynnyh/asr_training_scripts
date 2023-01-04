@@ -4,11 +4,9 @@ import tools
 from importlib import reload as rl
 import non_iid_dataloader as niiddl, lhotse
 from tqdm import tqdm
-from torch.nn import TransformerDecoder, TransformerDecoderLayer, Transformer
 import torch
-import x_transformers, torch
+import torch
 from omegaconf.omegaconf import OmegaConf
-import lm_utils
 import model_utils
 from tools import isfalse, istrue, exists
 import non_iid_dataloader as niiddl

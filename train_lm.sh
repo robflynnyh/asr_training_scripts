@@ -1,21 +1,21 @@
 echo '<<< TRAINING AUTOREGRESSIVE TLM >>>'
 
 python train_LM.py --checkpoint '' \
-    --checkpoint_dir './checkpoints/lm_test/' \
+    --checkpoint_dir './checkpoints/t0_b1/' \
     --model_config './experiment_configs/lm/decoder_test.yaml' \
-    --min_lr 4e-5 \
-    --max_lr 3.7e-4 \
-    --step_size 100 \
-    --accumulate_gradients 10\
+    --min_lr 1e-7 \
+    --max_lr 1e-5 \
+    --step_size 1700 \
+    --accumulate_gradients 1 \
     --clip_gradients \
     --clip_gradients_value 15 \
-    --micro_batch_duration 90 \
-    --micro_batch_number 3 \
+    --micro_batch_duration 0 \
+    --micro_batch_number 1 \
     --max_allowed_utterance_gap 10.0 \
     --wandb_id '' \
     --save_top_k 1 \
-    --schedular_data './checkpoints/lm_test.json' \
-    --project_name 'deliberation-LM' \
+    --schedular_data './t0b1.json' \
+    --project_name 'LM-context_len_stability_tests' \
     --label_smoothing 0.0 \
     
 
