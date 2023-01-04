@@ -10,6 +10,11 @@ import json
 def load_config(config:str):
     return OmegaConf.load(config)
 
+def write_to_log(log_file, data):
+    with open(log_file, 'a') as f:
+        f.write(data)
+        f.write('\n')
+
 def load_checkpoint(args, model, optim=None, force_cpu=False):
     checkpoint_path = args.checkpoint
     print(checkpoint_path)
@@ -56,6 +61,12 @@ def save_checkpoint(args, model, optim, epoch, val_loss):
     print(f'Saved checkpoint to {path}')
     return path
 
+def load_schedular_data(args):
+    with open(args.schedular_data, 'r') as f:
+        data = json.load(f)
+    return data['max_lr'], data['min_lr'], data['step_size']
+
+
 def save_schedular_data(args):
     tosave = {
         'max_lr': args.max_lr,
@@ -64,3 +75,9 @@ def save_schedular_data(args):
     }
     with open(args.schedular_data, 'w') as f:
         json.dump(tosave, f)
+
+
+def draw_text(text):
+    print(f'\n \n ------------------------------------------------- ')
+    print(f' ----------------- {text} ----------------- ')
+    print(f' ------------------------------------------------- \n \n')

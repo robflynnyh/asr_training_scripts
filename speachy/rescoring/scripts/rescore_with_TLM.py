@@ -24,7 +24,7 @@ from speachy.rescoring.tools import (
 )
 import wandb
 
-from compute_rescore_wer import main as compute_rescore_wer
+from speachy.rescoring.scripts.compute_rescore_wer import main as compute_rescore_wer
 
 class argsclass:
     def __init__(self, **kwargs):

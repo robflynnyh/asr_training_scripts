@@ -1,6 +1,5 @@
 
 
-
 def get_max_length(dataloader):
     max_len = 0
     for batch in dataloader:

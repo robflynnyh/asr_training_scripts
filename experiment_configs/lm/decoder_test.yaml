@@ -3,155 +3,20 @@ dataset: 'TED'
 
 model:
   tokenizer:
-    dir: "./tedlium/tokenizers/tokenizer_spe_bpe_v29" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
+    dir: "./tedlium/tokenizers/tokenizer_spe_bpe_v8000" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
     type: bpe  # has to be bpe (u have no choice)
   
   modeltype: qknorm_shared
-
-  qknorm_gau:
-    d_model: 256
-    n_layers: 12
-    n_heads: 8
-    dim_head: 32
-    dropout: 0.5
-    temperature: 15.5
-    kwargs:
-      ff_mult: 4
-      checkpoint_every_n: 2
-
-
-  qknorm_test_hierarchy:
-    d_model: 256
-    n_layers: 12
-    n_heads: 8
-    dim_head: 32
-    dropout: 0.5
-    temperature: 15.5
-    kwargs:
-      ff_mult: 4
-      tie_embedding: false
-      checkpoint_every_n: 2
-      shared_kv: false
 
   qknorm_shared:
     d_model: 256
     n_layers: 12
     n_heads: 8
     dim_head: 32
-    dropout: 0.5
+    dropout: 0.1
     temperature: 15.5
     kwargs:
       ff_mult: 4
       tie_embedding: false
-      checkpoint_every_n: 1
+      checkpoint_every_n: 0
       shared_kv: true
-
-
-  qknorm_test:
-    d_model: 256
-    n_layers: 12
-    n_heads: 8
-    dim_head: 32
-    dropout: 0.5
-    temperature: 15.5
-    kwargs:
-      ff_mult: 4
-      tie_embedding: false
-
-
-  qknorm_ami:
-    d_model: 256
-    n_layers: 12
-    n_heads: 8
-    dim_head: 32
-    dropout: 0.5
-    temperature: 15.5
-    kwargs:
-      ff_mult: 4
-      tie_embedding: false
-
-
-
-
-  myopic_test:
-    d_model: 256
-    W: -1
-    max_keep_keys: -1
-    n_layers: 12
-    n_heads: 8
-    dim_head: 32
-    dropout: 0.25
-
-
-  gau_qknorm_test:
-    d_model: 256
-    n_layers: 20
-    n_heads: 2
-    dim_head: 42
-    dropout: 0.5
-    temperature: 15.5
-
-
-  very_small_transformer:
-    d_model: 128
-    n_heads: 4
-    max_seq_len: -1
-    n_layers: 12
-    rotary_pos_emb: true
-
-  small_transformer:
-    d_model: 176
-    n_heads: 4
-    max_seq_len: -1
-    n_layers: 12
-    rotary_pos_emb: true
-
-  base_transformer:
-    d_model: 256
-    n_heads: 8
-    max_seq_len: -1
-    n_layers: 12
-    rotary_pos_emb: true
-
-  baseplus_transformer:
-    d_model: 256
-    n_heads: 8
-    max_seq_len: -1
-    n_layers: 14
-    rotary_pos_emb: true
-
-  medium_transformer:
-    d_model: 256
-    n_heads: 8
-    max_seq_len: -1
-    n_layers: 16
-    rotary_pos_emb: true
-
-  mediumplus_transformer:
-    d_model: 256
-    n_heads: 8
-    max_seq_len: -1
-    n_layers: 16
-    rotary_pos_emb: true
-
-
-  S4:
-    measure: legs
-    mode: nplr
-    transposed: false
-    d_model: 512
-    d_state: 64
-    n_layers: 6
-
-  perceiverAR:
-    max_seq_len: -1
-    d_model: 256
-    depth: 12
-    n_heads: 8
-    cross_attn_seq_len: 256
-    dim_head: 32
-    cross_attn_dropout: 0.4
-    perceive_max_heads_process: 2
-
-
-
