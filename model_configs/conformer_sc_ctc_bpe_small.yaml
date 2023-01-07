@@ -88,6 +88,10 @@ model:
     pos_emb_max_len: 5000
     self_condition: true # enables sc-ctc otherwise it is inter ctc
 
+    hydra_weighting: true # enables hydra weighting
+    spatial_attention_dropout: false
+    bottleneck_initial_ff: false # enables bottleneck initial FF in conv block
+
     # Convolution module's params
     conv_kernel_size: 31
     conv_norm_type: 'batch_renorm' # batch_norm or layer_norm
