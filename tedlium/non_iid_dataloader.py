@@ -157,6 +157,7 @@ class Minimal_IID_Dataset(torch.utils.data.Dataset):
   def __getitem__(self, idx) -> dict:
     text_only = self.text_only
     cuts = self.all_cuts[idx]
+
     audios, audio_lens = collate_audio(cuts) if isfalse(text_only) else (None, None)
     tokens, token_lens = self.tokenizer(cuts=cuts) if isfalse(text_only) else self.tokenizer(cuts=None, text=cuts)
     return {
@@ -228,6 +229,7 @@ def get_eval_dataloader(
     single_speaker_with_gaps=False,
     max_allowed_utterance_gap=-1,
     return_meta_data=False,
+    shuffle = False,
     ):
     assert isfalse(split_speakers) or concat_samples, "concat_samples must be True if split_speakers is True"
     assert isfalse(text_only), 'Not implemented'
@@ -246,7 +248,7 @@ def get_eval_dataloader(
     return torch.utils.data.DataLoader(
         Minimal_Evaluation_IID_Dataset(samples, return_speaker=return_speaker, return_metadata=return_meta_data),
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=shuffle,
         collate_fn=collate_batch_fn_eval
     )
 
