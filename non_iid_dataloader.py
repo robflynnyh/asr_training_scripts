@@ -160,6 +160,7 @@ class Minimal_IID_Dataset(torch.utils.data.Dataset):
   def __getitem__(self, idx) -> dict:
     text_only = self.text_only
     cuts = self.all_cuts[idx]
+
     audios, audio_lens = collate_audio(cuts) if isfalse(text_only) else (None, None)
     #print(len(cuts))
     tokens, token_lens = self.tokenizer(cuts=cuts) if isfalse(text_only) else self.tokenizer(cuts=None, text=cuts)
@@ -184,6 +185,7 @@ class Minimal_Evaluation_IID_Dataset(torch.utils.data.Dataset):
 
   def __getitem__(self, idx) -> dict:
     cuts = self.all_cuts[idx]
+    
     audios, audio_lens = collate_audio(cuts)
     out = {
         "audio": audios,

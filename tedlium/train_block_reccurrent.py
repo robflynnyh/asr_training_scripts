@@ -83,36 +83,6 @@ def move_to_device(sub_batch, device):
     return sub_batch
 
 
-@torch.no_grad()
-def ___validate_one_epoch(model, val_dataloader, device, sanity_check=False):
-    model.eval()
-    pbar = tqdm(val_dataloader, total=len(val_dataloader))
-    wers = []
-    losses = []
-    print('Evaluation epoch')
-    for batch in pbar:
-        input_signal, input_signal_lengths, targets, target_lengths, batch_size = squeeze_batch_and_to_device(batch, device)
-        segment_lens = batch['segment_lens'].to(device)
-        #pbar.update(batch_size)
-       
-        model_out = model.forward(input_signal=input_signal, input_signal_length=input_signal_lengths, segment_lens=segment_lens if isfalse(args.do_not_pass_segment_lens) else None)
-        log_probs, interim_posteriors, encoded_len = model_out[0], model_out[1], model_out[2] #just validate with final layer
-        
-        if exists(interim_posteriors):
-            interims = torch.empty(interim_posteriors.shape[0]).to(device)
-            for ix, layer in enumerate(interim_posteriors):
-                interim = model.loss(log_probs=layer, targets=targets, input_lengths=encoded_len, target_lengths=target_lengths)
-                interims[ix] = interim
-            interim_loss = torch.mean(interims)
-        loss = model.loss(log_probs=log_probs, targets=targets, input_lengths=encoded_len, target_lengths=target_lengths)
-        loss = loss if not exists(interim_posteriors) else interim_loss*INTERPOLATE + loss*(1-INTERPOLATE)
-        losses.append(loss.item())
-
-        if sanity_check:
-            return True
-
-    return  sum(losses) / len(losses)
-
 
 @torch.no_grad()
 def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
@@ -124,9 +94,8 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
     print('Evaluation epoch')
     for ix, batch in enumerate(pbar):
         sub_batches = create_subbatches(**batch)
-        prev_states = None
-        prev_state_lens = None
-
+        prev_states, prev_state_lens = None, None
+      
         for iz, sub_batch in enumerate(sub_batches):
             sub_batch = move_to_device(sub_batch, device)
             targets, target_lengths = sub_batch['tokens'], sub_batch['token_lens']
@@ -234,7 +203,8 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
                 ema.update() # update the moving average of the parameters
             cur_lr = schedular.get_last_lr()[0] if exists(schedular) else optim.param_groups[0]['lr']
 
-            prev_states = prev_states.detach() if exists(prev_states) else None
+            if exists(prev_states):
+                prev_states = prev_states.detach()
 
         cur_loss = sum(loss_iterim) / batch['audio'].shape[0]
         loss_iterim = []
@@ -250,80 +220,6 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
     torch.cuda.empty_cache() # to avoid memory leaks
 
     return loss_end
-
-def __train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=None, ema=None):
-    model.train()
-
-    losses = [] # for storing effective losses
-    loss_iterim = [] # for storing loss of each accumulation step
-    print('Training epoch')
-    pbar = tqdm(train_dataloader, total=len(train_dataloader))
-    autocast_device = 'cuda' if torch.cuda.is_available() else 'cpu' # for autocast if using mixed precision
-
-    #torch.autograd.set_detect_anomaly(True)
-
-    for i, batch in enumerate(pbar):
-        input_signal, input_signal_lengths, targets, target_lengths, batch_size = squeeze_batch_and_to_device(batch, device)
-        segment_lens = batch['segment_lens'].to(device)
-
-        with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
-            model_inputs = {
-                'input_signal': input_signal,
-                'input_signal_length': input_signal_lengths,
-                'segment_lens': segment_lens if isfalse(args.do_not_pass_segment_lens) else None
-            }
-            model_out = model.forward(**model_inputs)
-            log_probs, interim_posteriors, encoded_len = model_out[0], model_out[1], model_out[2] 
-
-            if exists(interim_posteriors):
-                interims = torch.empty(interim_posteriors.shape[0]).to(device)
-                for ix, layer in enumerate(interim_posteriors):
-                    interim = model.loss(log_probs=layer, targets=targets, input_lengths=encoded_len, target_lengths=target_lengths)
-                    interims[ix] = interim
-                interim_loss = torch.mean(interims)
-
-            loss_final = model.loss(log_probs=log_probs, targets=targets, input_lengths=encoded_len, target_lengths=target_lengths)
-            
-            loss_a = loss_final if not exists(interim_posteriors) else INTERPOLATE * interim_loss + (1 - INTERPOLATE) * loss_final
-            loss_a = loss_a / args.accumulate_gradients
-
-            loss_iterim.append(loss_a.item())
-
-        scaler.scale(loss_a).backward() if exists(scaler) else loss_a.backward()
-        
-        if (i + 1) % args.accumulate_gradients == 0:
-            if args.clip_gradients == True:
-                scaler.unscale_(optim) if exists(scaler) else None
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_gradients_value)
-
-            scaler.step(optim) if exists(scaler) else optim.step()
-            scaler.update() if exists(scaler) else None
-            optim.zero_grad() 
-
-            if exists(schedular):
-                schedular.step()
-            if exists(ema):
-                ema.update() # update the moving average of the parameters
-
-            cur_loss = sum(loss_iterim)
-            loss_iterim = []
-            losses.append(cur_loss)
-
-            cur_lr = schedular.get_last_lr()[0] if exists(schedular) else optim.param_groups[0]['lr']
-          
-            if args.wandb:
-                wandb.log({'train_loss': cur_loss, 'lrate': cur_lr})
-            pbar.set_description(f'Loss: {cur_loss}, lrate: {cur_lr}')
-
-
-    loss_end = sum(losses) / len(losses)
-    if args.wandb:
-        wandb.log({'train_loss_end': loss_end})
-
-    torch.cuda.empty_cache() # to avoid memory leaks
-
-    return loss_end
-    
 
 def main(args):
     model = load_model(args=args, model_class=ModelClass)
