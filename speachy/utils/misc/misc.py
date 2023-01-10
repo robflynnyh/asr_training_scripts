@@ -95,6 +95,20 @@ def draw_text(text):
     print(f' ----------------- {text} ----------------- ')
     print(f' ------------------------------------------------- \n \n')
 
+def save_json(obj:Dict, path:str):
+    with open(path, 'w') as f:
+        json.dump(obj, f)
+
+def load_json(path:str) -> Dict:
+    with open(path, 'r') as f:
+        return json.load(f)
+
+def run_cmd(cmd:str):
+    print(f'Running {cmd}')
+    subprocess.run(cmd, shell=True, check=True)
+
+def get_date():
+    return str(datetime.datetime.now()).replace(' ', '_').replace(':', '-').replace('.', '-')
 
 def add_common_args(parser:argparse.ArgumentParser):
     parser.add_argument('--epochs', type=int, default=5000)
