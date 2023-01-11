@@ -4,12 +4,12 @@ python train_block_reccurrent.py --checkpoint '' \
     --checkpoint_dir './checkpoints_conformer_xl_test' \
     --model_config '../model_configs/rnn_conformer_sc_ctc_bpe_small.yaml' \
     --min_lr 1e-6 \
-    --max_lr 8e-5 \
+    --max_lr 6.35e-5 \
     --step_size 850 \
     --clip_gradients \
     --clip_gradients_value 15 \
-    --micro_batch_duration 30 \
-    --micro_batch_number 40 \
+    --micro_batch_duration 35 \
+    --micro_batch_number 25 \
     --wandb_id '' \
     --schedular_data 'testing.json' \
     

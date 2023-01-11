@@ -85,12 +85,13 @@ def move_to_device(sub_batch, device):
 
 
 @torch.no_grad()
-def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
+def validate_one_epoch(epoch, model, val_dataloader, device, sanity_check=False):
     model.eval()
     pbar = tqdm(val_dataloader, total=len(val_dataloader))
     wers = []
     losses = []
     loss_iterim = []
+    
     print('Evaluation epoch')
     for ix, batch in enumerate(pbar):
         sub_batches = create_subbatches(**batch)
@@ -101,15 +102,18 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
             targets, target_lengths = sub_batch['tokens'], sub_batch['token_lens']
 
             if exists(prev_states) and exists(sub_batch['prev_state_indices']) and exists(prev_state_lens):
-                prev_states = prev_states[:,sub_batch['prev_state_indices']]
-                prev_state_lens = prev_state_lens[sub_batch['prev_state_indices']]
-
+                prev_states, prev_state_lens = prev_states[:,sub_batch['prev_state_indices']], prev_state_lens[sub_batch['prev_state_indices']]
+                state_data = move_to_device({'kvs': prev_states, 'kv_lens': prev_state_lens}, device=device)
+                prev_states, prev_state_lens = state_data['kvs'], state_data['kv_lens']
+                
+       
             model_inputs = {'input_signal': sub_batch['audio'], 'input_signal_length': sub_batch['audio_lens'], 'cached_kvs': prev_states, 'cached_kv_lens': prev_state_lens}
             model_out = model.forward(**model_inputs)
             log_probs, interim_posteriors, encoded_len, additional_outputs = model_out[0], model_out[1], model_out[2], model_out[-1]
             cached_kvs, full_kv_lens = additional_outputs['kvs_to_cache'], additional_outputs['full_kv_lens']
-            prev_states = cached_kvs
-            prev_state_lens = full_kv_lens
+            state_data = move_to_device({'kvs': cached_kvs, 'kv_lens': full_kv_lens}, 'cpu')
+            prev_states, prev_state_lens = state_data['kvs'], state_data['kv_lens']
+    
             #print(prev_states.shape, prev_state_lens.shape)
 
             if exists(interim_posteriors):
@@ -135,11 +139,14 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
 
     loss_end = sum(losses) / len(losses)
 
+    if args.wandb:
+        wandb.log({'val_loss': loss_end, 'epoch': epoch})   
+
     torch.cuda.empty_cache() # to avoid memory leaks
     return loss_end
 
 
-def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=None, ema=None):
+def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, scaler=None, ema=None):
     model.train()
     losses = [] # for storing effective losses
     loss_iterim = [] # for storing loss of each step
@@ -156,8 +163,9 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
             targets, target_lengths = sub_batch['tokens'], sub_batch['token_lens']
 
             if exists(prev_states) and exists(sub_batch['prev_state_indices']) and exists(prev_state_lens):
-                prev_states = prev_states[:,sub_batch['prev_state_indices']]
-                prev_state_lens = prev_state_lens[sub_batch['prev_state_indices']]
+                prev_states, prev_state_lens = prev_states[:,sub_batch['prev_state_indices']], prev_state_lens[sub_batch['prev_state_indices']]
+                state_data = move_to_device({'kvs': prev_states, 'kv_lens': prev_state_lens}, device=device)
+                prev_states, prev_state_lens = state_data['kvs'], state_data['kv_lens']
 
             with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
                 model_inputs = {
@@ -169,9 +177,9 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
 
                 model_out = model.forward(**model_inputs)
                 log_probs, interim_posteriors, encoded_len, additional_outputs = model_out[0], model_out[1], model_out[2], model_out[-1]
-                cached_kvs, full_kv_lens = additional_outputs['kvs_to_cache'], additional_outputs['full_kv_lens']
-                prev_states = cached_kvs
-                prev_state_lens = full_kv_lens
+                cached_kvs, full_kv_lens, commit_loss = additional_outputs['kvs_to_cache'], additional_outputs['full_kv_lens'], additional_outputs['commit_loss']
+                state_data = move_to_device({'kvs': cached_kvs, 'kv_lens': full_kv_lens}, 'cpu')
+                prev_states, prev_state_lens = state_data['kvs'], state_data['kv_lens']
 
                 if exists(interim_posteriors):
                     interims = torch.empty(interim_posteriors.shape[0]).to(device)
@@ -182,6 +190,8 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
 
                 loss_final = model.loss(log_probs=log_probs, targets=targets, input_lengths=encoded_len, target_lengths=target_lengths)
                 loss_a = loss_final if not exists(interim_posteriors) else INTERPOLATE * interim_loss + (1 - INTERPOLATE) * loss_final
+                #print(commit_loss, loss_a)
+                loss_a += commit_loss
                 # diff from batch size
                 loss_fraction = sub_batch['audio'].shape[0] / batch['audio'].shape[0]
                 loss_iterim.append(loss_a * sub_batch['audio'].shape[0])
@@ -215,7 +225,7 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
 
     loss_end = sum(losses) / len(losses)
     if args.wandb:
-        wandb.log({'train_loss_end': loss_end})
+        wandb.log({'train_loss_end': loss_end, 'epoch': epoch})
 
     torch.cuda.empty_cache() # to avoid memory leaks
 
@@ -260,12 +270,12 @@ def main(args):
            
 
     if args.run_test == True:
-        lossval = validate_one_epoch(model, test_dataloader, device, sanity_check=False)
+        lossval = validate_one_epoch(None, model, test_dataloader, device, sanity_check=False)
         print(f' Test loss: {lossval}')
         write_to_log(args.log_file, f'Test loss: {lossval} checkpoint: {args.checkpoint}')
         return
     
-    validate_one_epoch(model, dev_dataloader, device, sanity_check=True) # check no crash
+    validate_one_epoch(epoch=None, model=model, val_dataloader=dev_dataloader, device=device, sanity_check=True) # check no crash
 
     ema = ExponentialMovingAverage(model.parameters(), decay=0.9999) 
     scaler = GradScaler() if args.mixed_precision else None
@@ -282,7 +292,7 @@ def main(args):
         epoch = epoch_ + epoch_prev
         #train_dataloader.sampler.set_epoch(epoch)
 
-        loss = train_one_epoch(model, optim, schedular, train_dataloader, device, scaler, ema)          
+        loss = train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, scaler, ema)          
 
         try: # don't want this to crash if I accidentally delete the schedular config file
             schedular = update_schedular(args, optim, schedular) # allows changing of min n max learning rate during training
@@ -294,10 +304,8 @@ def main(args):
                 print(e, '\n') # todo move all this to update_schedular it looks ugly :P
 
         with ema.average_parameters(): # evaluate using ema of the parameters
-            vloss = validate_one_epoch(model, dev_dataloader, device, sanity_check=False)
+            vloss = validate_one_epoch(epoch, model, dev_dataloader, device, sanity_check=False)
 
-        if args.wandb:
-            wandb.log({'val_loss': vloss, 'epoch': epoch})
 
         print(f'\n\n\n--- Epoch {epoch}, Validation Loss: {vloss} ---\n\n\n')
         write_to_log(args.log_file, f'{epoch} - {vloss}')
