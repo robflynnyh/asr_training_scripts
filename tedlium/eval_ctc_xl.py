@@ -239,6 +239,7 @@ def evaluate(args, model, corpus, decoder):
             if exists(prev_states) and exists(sub_batch['prev_state_indices']) and exists(prev_state_lens): 
                 prev_states = prev_states[ : , sub_batch['prev_state_indices']]
                 prev_state_lens = prev_state_lens[sub_batch['prev_state_indices']]
+                #print(prev_states.shape, 'states')
 
             model_inputs = {
                 'input_signal': audios,
