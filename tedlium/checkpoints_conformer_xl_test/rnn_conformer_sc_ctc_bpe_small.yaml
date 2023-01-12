@@ -66,7 +66,7 @@ model:
     feat_in: ${model.preprocessor.features}
     feat_out: -1 # you may set it if you need different output size other than the default d_model
     n_layers: 12
-    d_model: 192
+    d_model: 256
 
     checkpoint_every_n_layers: 1 # set to 0 to disable checkpointing
 
@@ -85,7 +85,7 @@ model:
     ##
 
     # attn
-    n_heads: 6
+    n_heads: 8
     head_dim: 32
     temperature: 15.5
     ##
@@ -104,7 +104,7 @@ model:
 
   decoder:
     _target_: nemo.collections.asr.modules.ConvASRSelfConditioningDecoder
-    feat_in: 192
+    feat_in: 256
     num_classes: -1
     vocabulary: []
     gating: false # uses a gating function rather than addition to incorporate softmax posteriors 

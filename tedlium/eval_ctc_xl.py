@@ -34,10 +34,11 @@ def kenlm_decoder(arpa_, vocab, alpha=0.6, beta=0.8):
     print(f'Loaded KenLM model from {arpa} with alpha={alpha} and beta={beta}')
     return decoder
 
-def create_subbatches_eval(audio, audio_lens, text, speakers, segment_lens): # for loops ):
+def create_subbatches_eval(audio, audio_lens, text, speakers, segment_lens, metadata):
     max_segment_len = segment_lens.max()
     text = np.array(text)
     speakers = np.array(speakers)
+    metadata = np.array(metadata)
 
     culm_seglens = segment_lens.cumsum(dim=0)
     cur_positions = culm_seglens - segment_lens
@@ -67,9 +68,11 @@ def create_subbatches_eval(audio, audio_lens, text, speakers, segment_lens): # f
         non_empty_indices = torch.arange(len(non_empty_indices), dtype=torch.long)
     ####
     sub_batches = []
+   
     for i, ix in enumerate(sub_batches_indices):
         sbi = ix[ix != -1]
-        cur_audio, cur_audio_lens, cur_text, cur_speakers = audio[sbi], audio_lens[sbi], text[sbi], speakers[sbi]
+        cur_audio, cur_audio_lens, cur_text, cur_speakers, cur_metadata = audio[sbi], audio_lens[sbi], text[sbi], speakers[sbi], metadata[sbi]
+ 
         # trim audio and tokens to max length in sub batch
         max_cur_audio_len = cur_audio_lens.max()
         cur_audio = cur_audio[:, :max_cur_audio_len]
@@ -78,6 +81,7 @@ def create_subbatches_eval(audio, audio_lens, text, speakers, segment_lens): # f
             'audio_lens': cur_audio_lens,
             'text': cur_text.tolist(),
             'speakers': cur_speakers.tolist(),
+            'metadata': cur_metadata.tolist(),
             'prev_state_indices': prev_non_empty_fetch[i] if i > 0 else None, # for the first sub batch there is no previous state  
         })
         
@@ -196,8 +200,8 @@ def evaluate(args, model, corpus, decoder):
     torch.manual_seed(0)
     random.seed(0)
     np.random.seed(0)
-    torch.use_deterministic_algorithms(True)
-    torch.backends.cudnn.deterministic = True
+    #torch.use_deterministic_algorithms(True)
+    #torch.backends.cudnn.deterministic = True
     ##
 
     dataloader = non_iid_dataloader.get_eval_dataloader(
@@ -211,6 +215,7 @@ def evaluate(args, model, corpus, decoder):
         speaker_gap=args.speaker_gap,
         single_speaker_with_gaps=args.single_speaker_with_gaps,
         max_allowed_utterance_gap=args.max_allowed_utterance_gap,
+        return_meta_data=True,
         shuffle=False,
     )
 
