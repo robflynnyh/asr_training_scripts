@@ -1,16 +1,17 @@
 echo '<<< TRAINING SMALL CTC-XL MODEL >>>'
 
-python train_block_reccurrent.py --checkpoint 'checkpoint_24_id_79.pt' \
+python train_block_reccurrent.py --checkpoint '' \
     --checkpoint_dir './checkpoints_conformer_xl_test' \
     --model_config '../model_configs/rnn_conformer_sc_ctc_bpe_small.yaml' \
-    --min_lr 2e-6 \
-    --max_lr 7.4e-5 \
+    --min_lr 3.5e-6 \
+    --max_lr 7.2e-5 \
     --step_size 850 \
     --clip_gradients \
     --clip_gradients_value 15 \
-    --micro_batch_duration 40 \
+    --micro_batch_duration 50 \
+    --utts_per_micro_batch 3 \
     --micro_batch_number 25 \
-    --wandb_id '3fi1x1n0' \
+    --wandb_id '' \
     --schedular_data 'testing.json' \
     
 

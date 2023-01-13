@@ -150,6 +150,7 @@ def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, sc
     model.train()
     losses = [] # for storing effective losses
     loss_iterim = [] # for storing loss of each step
+    #commit_loss_iterim = [] # for storing loss of each step
     print('Training epoch')
     pbar = tqdm(train_dataloader, total=len(train_dataloader))
     autocast_device = 'cuda' if torch.cuda.is_available() else 'cpu' # for autocast if using mixed precision
@@ -194,7 +195,8 @@ def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, sc
                 loss_a += commit_loss
                 # diff from batch size
                 loss_fraction = sub_batch['audio'].shape[0] / batch['audio'].shape[0]
-                loss_iterim.append(loss_a * sub_batch['audio'].shape[0])
+                loss_iterim.append((loss_a * sub_batch['audio'].shape[0]).item())
+                #commit_loss_iterim.append((commit_loss * sub_batch['audio'].shape[0]).item())
                 loss_a = loss_a * loss_fraction # so lr is not affected when sbatch size is different from batch size (different seq len)
         
 
@@ -217,6 +219,7 @@ def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, sc
                 prev_states = prev_states.detach()
 
         cur_loss = sum(loss_iterim) / batch['audio'].shape[0]
+        #cur_commit_loss = sum(commit_loss_iterim) / batch['audio'].shape[0] if len(commit_loss_iterim) > 0 and commit_loss_iterim[0] != None else None
         loss_iterim = []
         losses.append(cur_loss)
         if args.wandb:
