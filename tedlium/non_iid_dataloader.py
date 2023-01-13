@@ -39,6 +39,7 @@ def get_duration_per_partition(split, verbose:bool=True):
 def prepare_samples(
         meetings, 
         max_duration=20, 
+        max_utts_per_cut=-1,
         concat_samples=False, 
         split_speakers=False, 
         gap=0.1, 
@@ -69,6 +70,9 @@ def prepare_samples(
         assert max_allowed_utterance_gap < 0, "max_allowed_utterance_gap is not used with single_speaker_with_gaps, set to -1 to disable"
         assert speaker_gap > gap, "speaker_gap is smaller than gap, this is unintended behaviour"
 
+    
+    max_utts_per_cut = max_utts_per_cut if max_utts_per_cut > 0 else None
+    
     samples = []
     #print('num_meeetings', len(meetings))
     for key in meetings.keys():
@@ -79,12 +83,13 @@ def prepare_samples(
                 cuts = meeting,
                 gap = gap, 
                 max_duration = max_duration,
+                max_utterances = max_utts_per_cut,
                 concat_cuts = concat_samples, 
                 seperate_speakers = split_speakers,
                 speaker_list = get_speakers(meeting) if split_speakers else [],
                 max_allowed_utterance_gap = max_allowed_utterance_gap,
             ) \
-                if isfalse(single_speaker_with_gaps) else individual_speaker_concat(
+                if isfalse(single_speaker_with_gaps) else individual_speaker_concat( # get rid of this really its weird thing to do imo
                     cuts = meeting,
                     gap = gap,
                     max_duration = max_duration,
@@ -219,6 +224,7 @@ class Minimal_Evaluation_IID_Dataset(torch.utils.data.Dataset):
 def get_eval_dataloader(
     split,
     max_duration=25,
+    max_utts_per_cut=-1,
     return_speaker=False,
     batch_size=1,
     concat_samples=False,
@@ -235,9 +241,11 @@ def get_eval_dataloader(
     assert isfalse(text_only), 'Not implemented'
 
     meetings = prepare_partition(split)
+
     samples = prepare_samples(
         meetings = meetings, 
         max_duration = max_duration, 
+        max_utts_per_cut = max_utts_per_cut,
         concat_samples=concat_samples, 
         split_speakers=split_speakers, 
         gap=gap, 
@@ -303,6 +311,7 @@ def get_data_loader(
         tokenizer=None, 
         shuffle=True, 
         max_duration=16,
+        max_utts_per_cut=-1,
         num_workers=4, 
         pinned_memory=False,
         batch_size=1,
@@ -325,6 +334,7 @@ def get_data_loader(
     samples = prepare_samples(
         meetings=meetings, 
         max_duration=max_duration, 
+        max_utts_per_cut=max_utts_per_cut,
         concat_samples=concat_samples,
         split_speakers=split_speakers,
         gap=gap,

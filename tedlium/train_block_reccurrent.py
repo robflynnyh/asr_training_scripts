@@ -244,7 +244,8 @@ def main(args):
         split=ami_dict[split], 
         tokenizer=tokenizer, 
         shuffle=True if split == 'train' else False,
-        max_duration=args.micro_batch_duration, 
+        max_duration=args.micro_batch_duration,
+        max_utts_per_cut=args.utts_per_micro_batch, 
         num_workers=args.num_workers, 
         batch_size=args.micro_batch_number, 
         concat_samples=False,
@@ -374,13 +375,13 @@ if __name__ == '__main__':
     parser.add_argument('--clip_gradients_value', type=float, default=10.0)
 
     parser.add_argument('--micro_batch_duration', type=int, default=45, help='batch size for non-i.i.d micro batches')
+    parser.add_argument('--utts_per_micro_batch', type=int, default=-1, help='number of utterances per micro batch (used in conjunctions with micro_batch_duration)')
     parser.add_argument('--micro_batch_number', type=int, default=1, help='number of i.i.d micro batches per mini-batch')
 
     parser.add_argument('--optimizer_type', type=str, default='madgrad', help='type of optimizer to use')
-   
     parser.add_argument('--split_speakers', action='store_true', help='if set, will split speakers into different micro batches')
-  
     parser.add_argument('--num_workers', type=int, default=1, help='number of workers for dataloader')
+
 
 
     args = parser.parse_args()

@@ -97,10 +97,11 @@ def ___evaluate(args, model, corpus, decoder):
     refs = []
     speakers = []
     encoded_lens = []
-
+    
     dataloader = non_iid_dataloader.get_eval_dataloader(
         corpus, 
-        max_duration=args.max_duration, 
+        max_duration=args.max_duration,
+        max_utts_per_cut=args.max_utts_per_cut, 
         return_speaker=True, 
         batch_size=args.num_meetings, 
         concat_samples=False,
@@ -207,6 +208,7 @@ def evaluate(args, model, corpus, decoder):
     dataloader = non_iid_dataloader.get_eval_dataloader(
         corpus, 
         max_duration=args.max_duration, 
+        max_utts_per_cut=args.max_utts_per_cut, 
         return_speaker=True, 
         batch_size=args.num_meetings, 
         concat_samples=False,
@@ -316,6 +318,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--tokenizer', type=str, default='./tokenizer_spe_bpe_v128', help='path to tokenizer dir')
     parser.add_argument('--max_duration', type=float, default=60, help='max duration of audio in seconds')
+    parser.add_argument('--max_utts_per_cut', type=int, default=-1, help='max number of utterances per cut default -1 equals no limit (used in conjuction with max_duration)')
     parser.add_argument('--num_meetings', type=int, default=1, help='number of meetings per batch')
 
     parser.add_argument('--log_file', type=str, default='eval_log.txt')
