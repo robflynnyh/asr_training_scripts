@@ -80,6 +80,12 @@ model:
     dpos_norm: false
     ##
 
+    ## VQ params
+    commitment_loss: 0.0 # set to 0.0 to disable commitment loss (will just rely on EMA of centroids (this works fine according to philwang))
+    codebook_dim: 6
+    codebook_size: 64
+
+
     # Feed forward module's params
     expansion_factor: 4
     ##
