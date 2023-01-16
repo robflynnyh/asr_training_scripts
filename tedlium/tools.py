@@ -215,7 +215,8 @@ def transform_txt(txt:str) -> str:
     return txt
 
 
-def load_corpus(target_folder:str=request_env('TED_DEFAULT'), prefix_path=request_env('DATA_HOME'), transform:bool=True) -> Dict[str, CutSet]:
+def load_corpus(
+    target_folder:str=request_env('TED_PATH'), prefix_path=request_env('TED_BASE'), transform:bool=True) -> Dict[str, CutSet]:
     ds = {}
     for split in ['train', 'dev', 'test']:
         cuts = CutSet.from_file(os.path.join(target_folder, f'tedlium_cuts_{split}.jsonl.gz'))

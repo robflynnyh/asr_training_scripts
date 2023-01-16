@@ -74,10 +74,10 @@ def get_text_probability(args, model, tokenizer, text, history):
     #print(tokenizer.ids_to_text(logprobs.argmax(dim=-1)[0,:50].tolist()), '- :SPAACE: -', tokenizer.ids_to_text(targets[0,:50].tolist()))
     logprobs = logprobs.squeeze(0).gather(1, targets.squeeze(0).unsqueeze(1))
 
-    length_penalty = logprobs.shape[0] * (1*args.length_penalty)
-    print('length_penalty', length_penalty)
+    #length_penalty = logprobs.shape[0] * (1*args.length_penalty)
+    #print('length_penalty', length_penalty)
     # get total logprob
-    logprobs = logprobs.sum() + length_penalty
+    logprobs = logprobs.sum() #+ length_penalty
     
     return logprobs.to('cpu')
 
@@ -199,15 +199,15 @@ if __name__ == '__main__':
     parser.add_argument('--max_utt_gap', type=float, default=10.0)
     parser.add_argument('--saveas', type=str, default='ppls.pkl')
 
-    parser.add_argument('--length_penalty', type=float, default=0.3)
+    parser.add_argument('--length_penalty', type=float, default=0.3) # not used
     parser.add_argument('--stop_at_beam', type=int, default=25)
-    parser.add_argument('--tlm_scale', type=float, default=0.4) # linearly scale TLM logp by this factor
-    parser.add_argument('--am_scale', type=float, default=0.75) # linearly scale AM logp by this factor')
-    parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.8) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
-    parser.add_argument('--temperature', type=float, default=0.9) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
+    parser.add_argument('--tlm_scale', type=float, default=0.2) # linearly scale TLM logp by this factor
+    parser.add_argument('--am_scale', type=float, default=0.4) # linearly scale AM logp by this factor')
+    parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.85) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
+    parser.add_argument('--temperature', type=float, default=0.85) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
 
 
-    parser.add_argument('--max_history_len', type=int, default=800)
+    parser.add_argument('-history','--max_history_len', type=int, default=800)
     
 
     parser.add_argument('--no_wandb', action='store_true')
