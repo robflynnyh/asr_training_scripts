@@ -218,7 +218,7 @@ def evaluate(args, model, corpus, decoder):
         single_speaker_with_gaps=args.single_speaker_with_gaps,
         max_allowed_utterance_gap=args.max_allowed_utterance_gap,
         return_meta_data=True,
-        shuffle=False,
+        shuffle=args.shuffle,
     )
 
     pbar = tqdm(dataloader, total=len(dataloader))
@@ -315,6 +315,8 @@ if __name__ == '__main__':
     parser.add_argument('--load_pretrained', action='store_true')
     parser.add_argument('--pretrained', type=str, default='stt_en_conformer_ctc_small') # stt_en_conformer_ctc_large stt_en_conformer_transducer_large
     parser.add_argument('--model_config', type=str, default='../model_configs/conformer_sc_ctc_bpe_small.yaml') 
+
+    parser.add_argument('--shuffle', action='store_true')
 
     parser.add_argument('--tokenizer', type=str, default='./tokenizer_spe_bpe_v128', help='path to tokenizer dir')
     parser.add_argument('--max_duration', type=float, default=60, help='max duration of audio in seconds')
