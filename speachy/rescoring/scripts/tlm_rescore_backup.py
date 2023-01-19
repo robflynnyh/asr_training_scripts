@@ -14,7 +14,7 @@ import lm_utils
 import model_utils
 from tools import isfalse, istrue, exists
 import non_iid_dataloader as niiddl
-
+import lm_utils
 import os 
 from einops import rearrange
 from speachy.rescoring.tools import (
@@ -24,7 +24,6 @@ from speachy.rescoring.tools import (
 )
 import wandb
 
-from speachy.lm.tools.loading import autoload
 from speachy.rescoring.scripts.compute_rescore_wer import main as compute_rescore_wer
 
 class argsclass:
@@ -32,35 +31,34 @@ class argsclass:
         self.__dict__.update(kwargs)
 
 @torch.no_grad()
-def get_text_probability(args, model, tokenizer, text, cached_states=None):
+def get_text_probability(args, model, tokenizer, text, history):
     device = torch.device(args.device)
-    tokens = tokenizer.text_to_ids(text)
+    tokens, history_tokens = tokenizer.text_to_ids(text), tokenizer.text_to_ids(history)
     token_prev = tokens
-    tokens = torch.tensor(tokens).unsqueeze(0).long()
+    tokens, history_tokens = torch.tensor(tokens).unsqueeze(0).long(), torch.tensor(history_tokens).unsqueeze(0).long()
   
+    history_len = len(history_tokens[0])
+    if history_len > 0:
+        tokens = torch.cat((history_tokens, tokens), dim=1)
 
-    add_bos = cached_states is None # problem
   
-    token_lens = torch.tensor([tokens.shape[-1]]) + (1 if add_bos else 0)
-    if tokens.shape[-1] == 0: # idk what to do here tbh
-        return torch.tensor(torch.nan), cached_states
-    #assert cached_states is None, 'FAK'
+    token_lens = torch.tensor([len(tokens[0])]) + 1 # add 1 for the <bos> token
     tokens, token_lens = tokens.to(device), token_lens.to(device)
-    tokens = lm_utils.add_bos(tokens, bos_token_id=0) if add_bos else tokens # don't add bos if we're starting from a cached state (bos is already there)
+    tokens = lm_utils.add_bos(tokens, bos_token_id=0)
     targets = tokens.clone()
-    targets[:, :-1] = tokens[:, 1:] # shift targets by 1 
-    targets = targets[:, :-1] # remove last token (no target for last token)
-    #targets = lm_utils.add_eos(targets, eos_id=0, token_lens=token_lens) don't use eos ):
-    #targets = lm_utils.mark_padding(targets, lm_utils.token_lens_to_mask(token_lens), pad_id=-100) # probably uncecery since batch of 1 so nooo padding
+    targets[:, :-1] = tokens[:, 1:]
+    targets = lm_utils.add_eos(targets, eos_id=0, token_lens=token_lens)
+    mask = lm_utils.token_lens_to_mask(token_lens)
+    targets = lm_utils.mark_padding(targets, mask, pad_id=-100)
 
-    
-    logits, _, cached_states = model(x=tokens, length=token_lens, cache=cached_states)
- 
+    model_args = {'x': tokens, 'mask': mask} if isfalse(callable(getattr(model, 'get_args', False))) \
+        else model.get_args(tokens=tokens, mask=mask, lengths=token_lens)
 
-    # remove first and last token 
-    toadd = 1 if add_bos else 0
-    logits = logits[:, toadd:-1, :] # no target for last token
-    targets = targets[:, toadd:] # 
+    logits = model(**model_args)
+   
+    # remove first and last token
+    logits = logits[:, history_len + 1:-1, :]
+    targets = targets[:, history_len + 1:-1]
 
     # remove eos/bos from probabilities
     logits = logits[:, :, 1:]
@@ -81,7 +79,7 @@ def get_text_probability(args, model, tokenizer, text, cached_states=None):
     # get total logprob
     logprobs = logprobs.sum() #+ length_penalty
     
-    return logprobs.to('cpu'), cached_states
+    return logprobs.to('cpu')
 
 def remove_multiple_spaces(text):
     return ' '.join(text.split())
@@ -94,66 +92,42 @@ def trim_history(history, max_len):
         history = history[-max_len:]
     return ' '.join(history)
 
-def trim_cache(kv_cache, max_len):
-    if max_len == 0:
-        return None
-    if kv_cache is None:
-        return None
 
-    if max_len == -1:
-        return kv_cache
-    if kv_cache['cache_lengths'] > max_len:
-        kv_cache['cache'] = kv_cache['cache'][:, :, :, :, -max_len:, :]
-        bos = kv_cache['cache'][:, :, :, :, 0, :].unsqueeze(-2)
-        kv_cache['cache'] = torch.cat([bos, kv_cache['cache']], dim=-2)
-        kv_cache['cache_lengths'] = torch.tensor([kv_cache['cache'].shape[-2]]).to(kv_cache['cache_lengths'].device)
-    return kv_cache
-
-def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code clean this up robert
+def compute_beam_ppls(args, model, tokenizer, recording_hyps):
     max_beam = args.stop_at_beam 
     max_history = args.max_history_len
     history_text = ''
     prev_end = None
-    kv_cache = None
-    kvs_to_cache = None
     for utt in tqdm(recording_hyps):
-        kv_cache = {'cache': kvs_to_cache['cache'].clone(), 'cache_lengths': kvs_to_cache['cache_lengths'].clone()} if kvs_to_cache is not None else None # np
         segment_start, segment_end = utt['meta_data']['timings'].values()
         prev_end = segment_start if prev_end is None else prev_end
-        
-        kv_cache = None if prev_end - segment_start > args.max_utt_gap else kv_cache
-        kv_cache = trim_cache(kv_cache, max_history)
-        #history_text = '' if prev_end - segment_start > args.max_utt_gap else history_text  # reset history if gap between utterances is too large
-        #history_text = trim_history(history_text, max_history)
+        history_text = '' if prev_end - segment_start > args.max_utt_gap else history_text  # reset history if gap between utterances is too large
+        history_text = trim_history(history_text, max_history)
         best_log_p, best_hyp = float('-inf'), ''
-        #print(f'History: {history_text}\n')
-        print(kv_cache['cache'].shape if kv_cache is not None else 'ERERRRR', 'hrr1')
+        print(f'History: {history_text}\n')
         print(f'Target: {utt["targets"][0]}\n')
-
         for idx in utt['beams'][0].keys():
             if idx >= max_beam:
                 break
-
             cur = utt['beams'][0][idx]
             hyptext = cur['text']
-            AM_prob, NGRAM_prob = torch.tensor(cur['am_score']) * args.am_scale, torch.tensor(cur['ngram_score'])
-
-            print(kv_cache['cache'].shape if kv_cache is not None else 'ERERRRR', 'hrr')
-            prob, cache = get_text_probability(args, model, tokenizer, hyptext, cached_states=kv_cache)
-       
-            if idx == 0 and cache is not None:
-                kvs_to_cache = {'cache': cache['cache'].clone(), 'cache_lengths': cache['cache_lengths'].clone()}
-        
-            prob *= args.tlm_scale
-
-            prob = NGRAM_prob if prob.isnan() else prob 
+            AM_prob = torch.tensor(cur['am_score']) * args.am_scale
+            NGRAM_prob = torch.tensor(cur['ngram_score'])
+            prob = get_text_probability(args, model, tokenizer, hyptext, history_text) * args.tlm_scale
+            if prob.isnan():
+                prob = AM_prob
             cur['tlm_prob'] = prob
-            cur['rescore_lp'] = interpolate(am_score=AM_prob, ngram_score=NGRAM_prob, lm_score=prob, alpha=args.interpolation_weight)
-   
-            print(f'beam: {idx}, prob: {cur["rescore_lp"]}, hyp: {hyptext}\n')
+            cur['rescore_lp'] = interpolate(
+                am_score=AM_prob,
+                ngram_score=NGRAM_prob,
+                lm_score=prob,
+                alpha=args.interpolation_weight
+            )
+            #print(f'AM prob: {AM_prob}, LM prob: {prob} (interpolated: {cur["rescore_lp"]})')
+        
+            print(f'beam: {idx}, prob: {cur["rescore_lp"]}, hyp: {hyptext}\n history len: {len(history_text.split())}')
 
             if cur['rescore_lp'] > best_log_p:
-
                 best_log_p = cur['rescore_lp']
                 best_hyp = hyptext
 
@@ -174,8 +148,8 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code
         utt['best_hyp'] = best_hyp
         print(f'best logp: {best_log_p}')
         #history_text += ' ' + best_hyp
-        #history_text += ' ' + utt['beams'][0][0]['text'] # use original hypothesis as history to prevent context drift
-        #history_text = remove_multiple_spaces(history_text)
+        history_text += ' ' + utt['beams'][0][0]['text'] # use original hypothesis as history to prevent context drift
+        history_text = remove_multiple_spaces(history_text)
         prev_end = segment_end
     return recording_hyps
         
@@ -193,8 +167,7 @@ def main(args, hypothesis):
     tokenizer_path = os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
     tokenizer = tools.load_tokenizer(tokenizer_path)
     
-    model = autoload(config=config, tokenizer=tokenizer)
-    #model = lm_utils.load_model(config, tokenizer, max_len=torch.inf)
+    model = lm_utils.load_model(config, tokenizer, max_len=torch.inf)
     epoch, val_loss  = model_utils.load_checkpoint(args=argsclass(**{'checkpoint': args.checkpoint}), model=model, force_cpu=True)
     modeltype = config['model']['modeltype']
     print(f'Loaded model {args.checkpoint} with epoch {epoch} and val_loss {val_loss}\n Model type: {modeltype}')
