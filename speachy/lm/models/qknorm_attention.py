@@ -463,7 +463,7 @@ class transformer_lm(nn.Module):
         return self_condition if (self.self_conditioning or self.intermediate_loss) and self.training else None
 
 
-    def forward(self, x, length=None, cache:Dict=None):
+    def forward(self, x, length=None, cache:Dict=None, **kwargs):
         '''
         x: [B, N] (embedding indices)
         length: [B] (length of each sequence)
