@@ -1,0 +1,21 @@
+program: rescore_with_TLM.py
+method: random
+metric:
+  name: wer
+  goal: minimize
+parameters:
+  interpolation_weight:
+    min: 0.4
+    max: 1.0
+  temperature:
+    min: 0.4
+    max: 1.0
+  tlm_scale:
+    min: 0.2
+    max: 0.5
+  am_scale:
+    min: 0.05
+    max: 2.0
+  length_penalty:
+    min: -2.5
+    max: 2.0

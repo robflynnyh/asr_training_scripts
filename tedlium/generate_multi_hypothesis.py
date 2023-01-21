@@ -84,7 +84,9 @@ def evaluate(args, model, corpus, decoder):
             logits_list = log_probs, 
             decoder = decoder, 
             beam_width = args.beam_size, 
-            encoded_lengths = encoded_len
+            encoded_lengths = encoded_len,
+            token_min_logp = args.token_min_logp,
+            beam_prune_logp = args.beam_prune_logp,
         )
 
         outputs = {
@@ -126,6 +128,8 @@ def main(args):
 
 
 
+
+
 if __name__ == '__main__':
     ''''
     Note I've only written this for a batch size of 1 (lazy)
@@ -150,6 +154,9 @@ if __name__ == '__main__':
     parser.add_argument('--split', type=str, default='test')
     parser.add_argument('--alpha', type=float, default=0.5)
     parser.add_argument('--beta', type=float, default=0.8)
+
+    parser.add_argument('-token_skip', '--token_min_logp', default=-5, type=float)
+    parser.add_argument('-beam_prune', '--beam_prune_logp', default=-10000, type=float)
 
     parser.add_argument('-nsc','--not_self_conditioned', action='store_true', help='use for non self-conditioned models')
 

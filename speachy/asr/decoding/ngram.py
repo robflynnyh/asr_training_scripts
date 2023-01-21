@@ -11,7 +11,15 @@ def decode_lm(logits_list, decoder, beam_width=100, encoded_lengths=None):
     return decoded
 
 
-def decode_beams_lm(logits_list, decoder, beam_width=100, encoded_lengths=None):
+def decode_beams_lm(
+        logits_list, 
+        decoder, 
+        beam_width=100, 
+        encoded_lengths=None,
+        beam_prune_logp = -10000, # no pruning
+        token_min_logp = -5,
+        prune_history = False,
+    ):
     decoded_data = []
     if encoded_lengths is None:
         encoded_lengths = [len(logits) for logits in logits_list]
@@ -19,9 +27,10 @@ def decode_beams_lm(logits_list, decoder, beam_width=100, encoded_lengths=None):
     for logits, length in zip(logits_list, encoded_lengths):
         beams = decoder.decode_beams(
             logits = logits[:length],
-            beam_prune_logp = -10000, # no pruning
+            beam_prune_logp = beam_prune_logp, 
+            token_min_logp = token_min_logp,
             beam_width = beam_width,
-            prune_history = False
+            prune_history = prune_history
         )
         decoded = {}
         for i, beam in enumerate(beams):

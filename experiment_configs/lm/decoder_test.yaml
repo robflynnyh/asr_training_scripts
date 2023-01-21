@@ -3,7 +3,7 @@ dataset: 'TED'
 
 model:
   tokenizer:
-    dir: "./tedlium/tokenizers/tokenizer_spe_bpe_v8000" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
+    dir: "./tedlium/tokenizers/tokenizer_spe_bpe_v29" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
     type: bpe  # has to be bpe (u have no choice)
   
   modeltype: qknorm_shared
@@ -13,10 +13,11 @@ model:
     n_layers: 12
     n_heads: 8
     dim_head: 32
-    dropout: 0.1
+    dropout: 0.5
     temperature: 15.5
     kwargs:
       ff_mult: 4
       tie_embedding: false
-      checkpoint_every_n: 0
+      checkpoint_every_n: 2
       shared_kv: true
+      talking_heads: false

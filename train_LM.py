@@ -27,7 +27,8 @@ from speachy.lm.tools.train import (
 
 from speachy.utils.misc import add_common_args
 
-from speachy.lm.tools.loading import autoload
+#from speachy.lm.tools.loading import autoload
+from lm_utils import load_model
 from speachy.utils.general.training_loop import optimizer, update_schedular
 
 from speachy.utils.helpers import  exists, isfalse, istrue
@@ -216,7 +217,7 @@ def main(args):
         test_dataloader = get_dl('test')
 
     args.max_tokens = -1
-    model = autoload(config=config, tokenizer=tokenizer)
+    model = load_model(config=config, tokenizer=tokenizer, max_len=torch.inf)
     model.tokenizer = tokenizer
     
     model.to(device)

@@ -47,11 +47,11 @@ def main(hypothesis):
 
 if __name__ == '__main__':
     args = argparse.ArgumentParser()
-    args.add_argument("--hypf", type=str, required=True)
+    args.add_argument("-hyp","--hyp", type=str, required=True)
     args.add_argument("--max_depth", type=int, default=-1)
     args = args.parse_args()
 
-    with open(args.hypf, 'rb') as f:
+    with open(args.hyp, 'rb') as f:
         hyps = pkl.load(f)
 
     main(hyps)
