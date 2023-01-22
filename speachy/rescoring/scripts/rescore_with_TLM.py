@@ -234,7 +234,7 @@ if __name__ == '__main__':
     parser.add_argument('--am_scale', type=float, default=0.4) # linearly scale AM logp by this factor')
     parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.85) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
     parser.add_argument('--temperature', type=float, default=0.85) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
-    parser.add_argument('-use_cache','--use_cached_scores', action='store_false', help='whether to use cached scores from previous runs rather than recomputing them ')
+    parser.add_argument('-use_cache','--use_cached_scores', action='store_true', help='whether to use cached scores from previous runs rather than recomputing them ')
 
     parser.add_argument('-history','--max_history_len', type=int, default=-1)
     

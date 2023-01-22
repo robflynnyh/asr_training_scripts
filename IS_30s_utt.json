@@ -1,1 +1,1 @@
-{"max_lr": 0.0001125, "min_lr": 1e-05, "step_size": 600}
+{"max_lr": 0.0002225, "min_lr": 5e-05, "step_size": 450}
