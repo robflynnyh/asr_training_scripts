@@ -107,58 +107,34 @@ def trim_cache(kv_cache, max_len):
         kv_cache['cache_lengths'] = torch.tensor([kv_cache['cache'].shape[-2]]).to(kv_cache['cache_lengths'].device)
     return kv_cache
 
-def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code clean this up robert
+def rescore(args, recording_hyps, standardise_stats): # disgusting code clean this up robert
     max_beam = args.stop_at_beam 
-    max_history = args.max_history_len
-    history_text = ''
-    prev_end = None
-    kv_cache = None
-    kvs_to_cache = None
-    for utt in tqdm(recording_hyps):
-        kv_cache = {'cache': kvs_to_cache['cache'].clone(), 'cache_lengths': kvs_to_cache['cache_lengths'].clone()} if kvs_to_cache is not None else None # np
-        segment_start, segment_end = utt['meta_data']['timings'].values()
-        prev_end = segment_start if prev_end is None else prev_end
-        
-        kv_cache = None if prev_end - segment_start > args.max_utt_gap else kv_cache
-        kv_cache = trim_cache(kv_cache, max_history)
-        #history_text = '' if prev_end - segment_start > args.max_utt_gap else history_text  # reset history if gap between utterances is too large
-        #history_text = trim_history(history_text, max_history)
-        best_log_p, best_hyp = float('-inf'), ''
-        #print(f'History: {history_text}\n')
-        #print(kv_cache['cache'].shape if kv_cache is not None else 'ERERRRR', 'hrr1')
-        print(f'Target: {utt["targets"][0]}\n')
 
+    for utt in tqdm(recording_hyps):
+        best_log_p, best_hyp = float('-inf'), ''
+        print(f'Target: {utt["targets"][0]}\n')
         for idx in utt['beams'][0].keys():
             cur = utt['beams'][0][idx]
             if idx >= max_beam:
                 break
-            if args.use_cached_scores and 'tlm_prob' not in cur:
+            if 'tlm_prob' not in cur:
+                print('no tlm prob, skipping')
                 continue
 
             hyptext = cur['text']
             AM_prob, NGRAM_prob = torch.tensor(cur['am_score']), torch.tensor(cur['ngram_score'])
-            AM_prob = (AM_prob +3.4360484904332695) / 3.9842864474648816
+            AM_prob = (AM_prob - standardise_stats['am_mean']) / standardise_stats['am_std']
 
-            if not args.use_cached_scores:
-                prob, cache, length_penalty = get_text_probability(args, model, tokenizer, hyptext, cached_states=kv_cache)
-            else:
-                prob = torch.tensor(cur['tlm_prob'])
-                cache = None
-                length_penalty = torch.tensor(cur['length_penalty'])
-       
-            if idx == 0 and cache is not None:
-                kvs_to_cache = {'cache': cache['cache'].clone(), 'cache_lengths': cache['cache_lengths'].clone()}
-        
-
-            prob = NGRAM_prob if prob.isnan() or prob == float('-inf') or prob == 0 else prob
-            cur['tlm_prob'] = prob
-            prob = (prob +110.96556030975336) / 69.37794067180947
-            
-            cur['length_penalty'] = length_penalty
+    
+            prob = torch.tensor(cur['tlm_prob'])
+            prob = (prob - standardise_stats['tlm_mean']) / standardise_stats['tlm_std']
+            length_penalty = torch.tensor(cur['length_penalty'])
             penalize_len = length_penalty * args.length_penalty
             prob = prob * args.tlm_scale - penalize_len
-        
-            cur['rescore_lp'] = (prob + AM_prob).item()
+            NGRAM_prob = (NGRAM_prob - standardise_stats['ngram_mean']) / standardise_stats['ngram_std']
+            NGRAM_prob = NGRAM_prob * args.ngram_scale
+
+            cur['rescore_lp'] = (prob + AM_prob + NGRAM_prob).item()
    
             print(f'beam: {idx}, prob: {cur["rescore_lp"]}, hyp: {hyptext}\n')
 
@@ -182,19 +158,60 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code
         utt['best_logp'] = best_log_p
         utt['best_hyp'] = best_hyp
         print(f'best logp: {best_log_p}')
-        prev_end = segment_end
+     
     return recording_hyps
         
+def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code clean this up robert
+    max_beam = args.stop_at_beam 
+    max_history = args.max_history_len
+    history_text = ''
+    prev_end = None
+    kv_cache = None
+    kvs_to_cache = None
+    for utt in tqdm(recording_hyps):
+        kv_cache = {'cache': kvs_to_cache['cache'].clone(), 'cache_lengths': kvs_to_cache['cache_lengths'].clone()} if kvs_to_cache is not None else None # np
+        segment_start, segment_end = utt['meta_data']['timings'].values()
+        prev_end = segment_start if prev_end is None else prev_end
+        
+        kv_cache = None if prev_end - segment_start > args.max_utt_gap else kv_cache
+        kv_cache = trim_cache(kv_cache, max_history)
+        best_log_p, best_hyp = float('-inf'), ''
 
-def compute_all_ppls(args, model, tokenizer, hypothesis):
+        for idx in utt['beams'][0].keys():
+            cur = utt['beams'][0][idx]
+            if idx >= max_beam:
+                break
+            if args.use_cached_scores and 'tlm_prob' not in cur:
+                continue
+
+            hyptext = cur['text']
+            AM_prob, NGRAM_prob = torch.tensor(cur['am_score']), torch.tensor(cur['ngram_score'])
+            prob, cache, length_penalty = get_text_probability(args, model, tokenizer, hyptext, cached_states=kv_cache)
+            if idx == 0 and cache is not None:
+                kvs_to_cache = {'cache': cache['cache'].clone(), 'cache_lengths': cache['cache_lengths'].clone()}
+        
+            prob = NGRAM_prob if prob.isnan() or prob == float('-inf') or prob == 0 else prob # just in case
+            cur['tlm_prob'] = prob
+            cur['length_penalty'] = length_penalty
+    return recording_hyps
+
+
+def compute_lm_ppls(args, model, tokenizer, hypothesis):
     for i, key in enumerate(hypothesis.keys()):
         recording = hypothesis[key]
         print(f'Computing perplexities for recording {key}, {i+1}/{len(hypothesis.keys())}')
         hypothesis[key] = compute_beam_ppls(args, model, tokenizer, recording)
     return hypothesis
 
+def rescore_speakers(args, hypothesis, stardardise_stats):
+    for i, key in enumerate(hypothesis.keys()):
+        recording = hypothesis[key]
+        print(f'rescoring for recording {key}, {i+1}/{len(hypothesis.keys())}')
+        hypothesis[key] = rescore(args, recording, stardardise_stats)
+    return hypothesis
+
 def get_standardisation_stats(hypothesis):
-    am_scores, tlm_scores = [], []
+    am_scores, tlm_scores, n_gram_scores = [], [], []
     for i, key in enumerate(hypothesis.keys()):
         recording = hypothesis[key]
         print(f'getting standardisation stats for recording {key}, {i+1}/{len(hypothesis.keys())}')
@@ -204,16 +221,21 @@ def get_standardisation_stats(hypothesis):
                 continue
             am_score = torch.tensor(cur['am_score'])
             tlm_score = torch.tensor(cur['tlm_prob'])
+            n_gram_score = torch.tensor(cur['ngram_score'])
             am_scores.append(am_score)
             tlm_scores.append(tlm_score)
-    assert len(am_scores) == len(tlm_scores) and len(am_scores) > 0, 'No scores found or mismatched scores'
+            n_gram_scores.append(n_gram_score)
+    assert len(am_scores) == len(tlm_scores) == len(n_gram_scores) and len(am_scores) > 0
     am_scores = torch.stack(am_scores)
     tlm_scores = torch.stack(tlm_scores)
+    n_gram_scores = torch.stack(n_gram_scores)
     am_mean, am_std = am_scores.mean(), am_scores.std()
     tlm_mean, tlm_std = tlm_scores.mean(), tlm_scores.std()
+    n_gram_mean, n_gram_std = n_gram_scores.mean(), n_gram_scores.std()
     print(f'AM mean: {am_mean}, AM std: {am_std}')
     print(f'TLM mean: {tlm_mean}, TLM std: {tlm_std}')
-    return {'am_mean': am_mean, 'am_std': am_std, 'tlm_mean': tlm_mean, 'tlm_std': tlm_std}
+    print(f'NGRAM mean: {n_gram_mean}, NGRAM std: {n_gram_std}')
+    return {'am_mean': am_mean, 'am_std': am_std, 'tlm_mean': tlm_mean, 'tlm_std': tlm_std, 'ngram_mean': n_gram_mean, 'ngram_std': n_gram_std}
 
 
 def main(args, hypothesis):
@@ -236,17 +258,20 @@ def main(args, hypothesis):
         hypothesis = sort_hypothesis_by_recording(hypothesis)
         hypothesis = order_recordings_by_start_time(hypothesis)
 
-    if not args.compute_standardisation_stats:
-        hypothesis = compute_all_ppls(args, model, tokenizer, hypothesis)
-        wer = compute_rescore_wer(hypothesis)
-        if not args.no_wandb:
-            wandb.log({'wer': wer})
-        elif args.saveas != '':
-            with open(args.saveas, 'wb') as f:
-                pkl.dump(hypothesis, f)
-        print(f'WER: {wer}')
-    else:
-        get_standardisation_stats(hypothesis)
+    if args.use_cached_scores == False:
+        hypothesis = compute_lm_ppls(args, model, tokenizer, hypothesis)
+    stardardise_stats = get_standardisation_stats(hypothesis)
+    #input('Press enter to continue')
+    hypothesis = rescore_speakers(args, hypothesis, stardardise_stats)
+
+    wer = compute_rescore_wer(hypothesis)
+    if not args.no_wandb:
+        wandb.log({'wer': wer})
+    elif args.saveas != '':
+        with open(args.saveas, 'wb') as f:
+            pkl.dump(hypothesis, f)
+    print(f'WER: {wer}')
+
 
     
     
@@ -263,20 +288,16 @@ if __name__ == '__main__':
 
     parser.add_argument('--length_penalty', type=float, default=0.0) 
     parser.add_argument('--stop_at_beam', type=int, default=25)
-    parser.add_argument('--tlm_scale', type=float, default=0.2) # linearly scale TLM logp by this factor
-    parser.add_argument('--am_scale', type=float, default=0.4) # linearly scale AM logp by this factor')
-    parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.85) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
+    parser.add_argument('--tlm_scale', type=float, default=8.0) # linearly scale TLM logp by this factor
+    parser.add_argument('--ngram_scale', type=float, default=0.1) # linearly scale AM logp by this factor')
     parser.add_argument('--temperature', type=float, default=0.85) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
     parser.add_argument('-use_cache','--use_cached_scores', action='store_true', help='whether to use cached scores from previous runs rather than recomputing them ')
 
-    parser.add_argument('--compute_standardisation_stats', action='store_true', help='whether to compute standardisation stats for AM and TLM scores')
     parser.add_argument('-history','--max_history_len', type=int, default=-1)
 
     parser.add_argument('--no_wandb', action='store_true')
     args = parser.parse_args()
 
-    if args.compute_standardisation_stats and not args.use_cached_scores:
-        raise ValueError('please compute cached scores first before computing standardisation stats')
 
     if args.device == 'auto':
         args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
