@@ -59,7 +59,11 @@ def main(args):
     #tokenizer = AutoTokenizer.from_pretrained('EleutherAI/gpt-neo-125M')
     tokenizer = AutoTokenizer.from_pretrained(
 <<<<<<< HEAD
+<<<<<<< HEAD
         "EleutherAI/pythia-70m",
+=======
+        "EleutherAI/pythia-19m",
+>>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
 =======
         "EleutherAI/pythia-19m",
 >>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
@@ -69,7 +73,11 @@ def main(args):
     #model = AutoModelForCausalLM.from_pretrained('EleutherAI/gpt-neo-125M')
     model = GPTNeoXForCausalLM.from_pretrained(
 <<<<<<< HEAD
+<<<<<<< HEAD
         "EleutherAI/pythia-70m",
+=======
+        "EleutherAI/pythia-19m",
+>>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
 =======
         "EleutherAI/pythia-19m",
 >>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
@@ -110,7 +118,11 @@ def main(args):
 
         for text_sample in tqdm(samples):
 <<<<<<< HEAD
+<<<<<<< HEAD
             txt = tokenizer.bos_token + text_sample  # WHAT ABOUT EEOS TOKEN? !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+=======
+            txt = tokenizer.bos_token + text_sample
+>>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
 =======
             txt = tokenizer.bos_token + text_sample
 >>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea

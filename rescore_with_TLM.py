@@ -194,7 +194,10 @@ def main(args, hypothesis):
     tokenizer = tools.load_tokenizer(tokenizer_path)
     
 <<<<<<< HEAD
+<<<<<<< HEAD
 
+=======
+>>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
 =======
 >>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
     model = autoload(config=config, tokenizer=tokenizer)
@@ -225,7 +228,11 @@ def main(args, hypothesis):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 <<<<<<< HEAD
+<<<<<<< HEAD
     parser.add_argument("--hyppkl", type=str, default='./2p5k_dev_rescored_nolm.pkl')
+=======
+    parser.add_argument("--hyppkl", type=str, default='./dev_rescored.pkl')
+>>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
 =======
     parser.add_argument("--hyppkl", type=str, default='./dev_rescored.pkl')
 >>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
@@ -240,8 +247,13 @@ if __name__ == '__main__':
     parser.add_argument('--stop_at_beam', type=int, default=25)
     parser.add_argument('--tlm_scale', type=float, default=0.2) # linearly scale TLM logp by this factor
 <<<<<<< HEAD
+<<<<<<< HEAD
     parser.add_argument('--am_scale', type=float, default=1.0) # linearly scale AM logp by this factor')
     parser.add_argument('-alpha','--interpolation_weight', type=float, default=1.0) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
+=======
+    parser.add_argument('--am_scale', type=float, default=0.4) # linearly scale AM logp by this factor')
+    parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.85) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
+>>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
 =======
     parser.add_argument('--am_scale', type=float, default=0.4) # linearly scale AM logp by this factor')
     parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.85) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 

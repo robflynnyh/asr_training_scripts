@@ -28,7 +28,11 @@ from transformers import GPTNeoXForCausalLM, AutoTokenizer
 
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 from speachy.rescoring.scripts.compute_rescore_wer import main as compute_rescore_wer
+=======
+from compute_rescore_wer import main as compute_rescore_wer
+>>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
 =======
 from compute_rescore_wer import main as compute_rescore_wer
 >>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
@@ -263,7 +267,11 @@ if __name__ == '__main__':
         hyps = pkl.load(f)
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     main(args, hyps)
+=======
+    main(args, hyps)
+>>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
 =======
     main(args, hyps)
 >>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
