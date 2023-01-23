@@ -27,7 +27,11 @@ import wandb
 from transformers import GPTNeoXForCausalLM, AutoTokenizer
 
 
+<<<<<<< HEAD
 from speachy.rescoring.scripts.compute_rescore_wer import main as compute_rescore_wer
+=======
+from compute_rescore_wer import main as compute_rescore_wer
+>>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
 
 class argsclass:
     def __init__(self, **kwargs):
@@ -258,4 +262,8 @@ if __name__ == '__main__':
     with open(args.hyppkl, 'rb') as f:
         hyps = pkl.load(f)
 
+<<<<<<< HEAD
     main(args, hyps)
+=======
+    main(args, hyps)
+>>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea

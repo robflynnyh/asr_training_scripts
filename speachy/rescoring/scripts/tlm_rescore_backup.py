@@ -14,7 +14,7 @@ import lm_utils
 import model_utils
 from tools import isfalse, istrue, exists
 import non_iid_dataloader as niiddl
-
+import lm_utils
 import os 
 from einops import rearrange
 from speachy.rescoring.tools import (
@@ -24,7 +24,6 @@ from speachy.rescoring.tools import (
 )
 import wandb
 
-from speachy.lm.tools.loading import autoload
 from speachy.rescoring.scripts.compute_rescore_wer import main as compute_rescore_wer
 
 class argsclass:
@@ -32,34 +31,34 @@ class argsclass:
         self.__dict__.update(kwargs)
 
 @torch.no_grad()
-def get_text_probability(args, model, tokenizer, text, cached_states=None):
+def get_text_probability(args, model, tokenizer, text, history):
     device = torch.device(args.device)
-    tokens = tokenizer.text_to_ids(text)
+    tokens, history_tokens = tokenizer.text_to_ids(text), tokenizer.text_to_ids(history)
     token_prev = tokens
-    tokens = torch.tensor(tokens).unsqueeze(0).long()
+    tokens, history_tokens = torch.tensor(tokens).unsqueeze(0).long(), torch.tensor(history_tokens).unsqueeze(0).long()
   
+    history_len = len(history_tokens[0])
+    if history_len > 0:
+        tokens = torch.cat((history_tokens, tokens), dim=1)
 
-    add_bos = cached_states is None # problem
   
-    token_lens = torch.tensor([tokens.shape[-1]]) + (1 if add_bos else 0)
-    if tokens.shape[-1] == 0: # idk what to do here tbh
-        return torch.tensor(torch.nan), cached_states, torch.tensor(2).float().log().item()
-    #assert cached_states is None, 'FAK'
+    token_lens = torch.tensor([len(tokens[0])]) + 1 # add 1 for the <bos> token
     tokens, token_lens = tokens.to(device), token_lens.to(device)
-    tokens = lm_utils.add_bos(tokens, bos_token_id=0) if add_bos else tokens # don't add bos if we're starting from a cached state (bos is already there)
+    tokens = lm_utils.add_bos(tokens, bos_token_id=0)
     targets = tokens.clone()
-    targets[:, :-1] = tokens[:, 1:] # shift targets by 1 
-    targets = targets[:, :-1] # remove last token (no target for last token)
-    #targets = lm_utils.add_eos(targets, eos_id=0, token_lens=token_lens) don't use eos ):
-    #targets = lm_utils.mark_padding(targets, lm_utils.token_lens_to_mask(token_lens), pad_id=-100) # probably uncecery since batch of 1 so nooo padding
-    
-    logits, _, cached_states = model(x=tokens, length=token_lens, cache=cached_states)
- 
+    targets[:, :-1] = tokens[:, 1:]
+    targets = lm_utils.add_eos(targets, eos_id=0, token_lens=token_lens)
+    mask = lm_utils.token_lens_to_mask(token_lens)
+    targets = lm_utils.mark_padding(targets, mask, pad_id=-100)
 
-    # remove first and last token 
-    toadd = 1 if add_bos else 0
-    logits = logits[:, toadd:-1, :] # no target for last token
-    targets = targets[:, toadd:] # 
+    model_args = {'x': tokens, 'mask': mask} if isfalse(callable(getattr(model, 'get_args', False))) \
+        else model.get_args(tokens=tokens, mask=mask, lengths=token_lens)
+
+    logits = model(**model_args)
+   
+    # remove first and last token
+    logits = logits[:, history_len + 1:-1, :]
+    targets = targets[:, history_len + 1:-1]
 
     # remove eos/bos from probabilities
     logits = logits[:, :, 1:]
@@ -70,15 +69,17 @@ def get_text_probability(args, model, tokenizer, text, cached_states=None):
     logits = logits / args.temperature
     logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
 
-    logprobs = logprobs.squeeze(0).gather(1, targets.squeeze(0).unsqueeze(1)).squeeze()
-    logprobslen = logprobs.shape[0] if len(logprobs.shape) > 0 else 1
-    #logprobslen = 1 if logprobslen == 0 else logprobslen
+    # then take the log of the probability of the target
+    #print(logprobs.argmax(dim=-1)[0,:20], targets[0,:20])  # DEBUG !!
+    #print(tokenizer.ids_to_text(logprobs.argmax(dim=-1)[0,:50].tolist()), '- :SPAACE: -', tokenizer.ids_to_text(targets[0,:50].tolist()))
+    logprobs = logprobs.squeeze(0).gather(1, targets.squeeze(0).unsqueeze(1))
 
-    length_penalty = torch.tensor(logprobslen+1).float().log().item()
-
-    logprobs = logprobs.sum() 
+    #length_penalty = logprobs.shape[0] * (1*args.length_penalty)
+    #print('length_penalty', length_penalty)
+    # get total logprob
+    logprobs = logprobs.sum() #+ length_penalty
     
-    return logprobs.to('cpu'), cached_states, length_penalty
+    return logprobs.to('cpu')
 
 def remove_multiple_spaces(text):
     return ' '.join(text.split())
@@ -91,70 +92,40 @@ def trim_history(history, max_len):
         history = history[-max_len:]
     return ' '.join(history)
 
-def trim_cache(kv_cache, max_len):
-    if max_len == 0:
-        return None
-    if kv_cache is None:
-        return None
 
-    if max_len == -1:
-        return kv_cache
-    if kv_cache['cache_lengths'] > max_len:
-        kv_cache['cache'] = kv_cache['cache'][:, :, :, :, -max_len:, :]
-        bos = kv_cache['cache'][:, :, :, :, 0, :].unsqueeze(-2)
-        kv_cache['cache'] = torch.cat([bos, kv_cache['cache']], dim=-2)
-        kv_cache['cache_lengths'] = torch.tensor([kv_cache['cache'].shape[-2]]).to(kv_cache['cache_lengths'].device)
-    return kv_cache
-
-def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code clean this up robert
+def compute_beam_ppls(args, model, tokenizer, recording_hyps):
     max_beam = args.stop_at_beam 
     max_history = args.max_history_len
     history_text = ''
     prev_end = None
-    kv_cache = None
-    kvs_to_cache = None
     for utt in tqdm(recording_hyps):
-        kv_cache = {'cache': kvs_to_cache['cache'].clone(), 'cache_lengths': kvs_to_cache['cache_lengths'].clone()} if kvs_to_cache is not None else None # np
         segment_start, segment_end = utt['meta_data']['timings'].values()
         prev_end = segment_start if prev_end is None else prev_end
-        
-        kv_cache = None if prev_end - segment_start > args.max_utt_gap else kv_cache
-        kv_cache = trim_cache(kv_cache, max_history)
-        #history_text = '' if prev_end - segment_start > args.max_utt_gap else history_text  # reset history if gap between utterances is too large
-        #history_text = trim_history(history_text, max_history)
+        history_text = '' if prev_end - segment_start > args.max_utt_gap else history_text  # reset history if gap between utterances is too large
+        history_text = trim_history(history_text, max_history)
         best_log_p, best_hyp = float('-inf'), ''
-        #print(f'History: {history_text}\n')
-        #print(kv_cache['cache'].shape if kv_cache is not None else 'ERERRRR', 'hrr1')
+        print(f'History: {history_text}\n')
         print(f'Target: {utt["targets"][0]}\n')
-
         for idx in utt['beams'][0].keys():
-            cur = utt['beams'][0][idx]
             if idx >= max_beam:
                 break
-            if args.use_cached_scores and 'tlm_prob' not in cur:
-                continue
-
+            cur = utt['beams'][0][idx]
             hyptext = cur['text']
-            AM_prob, NGRAM_prob = torch.tensor(cur['am_score']) * args.am_scale, torch.tensor(cur['ngram_score'])
-
-            if not args.use_cached_scores:
-                prob, cache, length_penalty = get_text_probability(args, model, tokenizer, hyptext, cached_states=kv_cache)
-            else:
-                prob = torch.tensor(cur['tlm_prob'])
-                cache = None
-                length_penalty = torch.tensor(cur['length_penalty'])
-       
-            if idx == 0 and cache is not None:
-                kvs_to_cache = {'cache': cache['cache'].clone(), 'cache_lengths': cache['cache_lengths'].clone()}
-        
-
-            prob = NGRAM_prob if prob.isnan() or prob == float('-inf') or prob == 0 else prob
+            AM_prob = torch.tensor(cur['am_score']) * args.am_scale
+            NGRAM_prob = torch.tensor(cur['ngram_score'])
+            prob = get_text_probability(args, model, tokenizer, hyptext, history_text) * args.tlm_scale
+            if prob.isnan():
+                prob = AM_prob
             cur['tlm_prob'] = prob
-            cur['length_penalty'] = length_penalty
-            penalize_len = length_penalty * args.length_penalty
-            cur['rescore_lp'] = (interpolate(am_score=AM_prob, ngram_score=NGRAM_prob, lm_score=prob*args.tlm_scale, alpha=args.interpolation_weight) - penalize_len).item()
-   
-            print(f'beam: {idx}, prob: {cur["rescore_lp"]}, hyp: {hyptext}\n')
+            cur['rescore_lp'] = interpolate(
+                am_score=AM_prob,
+                ngram_score=NGRAM_prob,
+                lm_score=prob,
+                alpha=args.interpolation_weight
+            )
+            #print(f'AM prob: {AM_prob}, LM prob: {prob} (interpolated: {cur["rescore_lp"]})')
+        
+            print(f'beam: {idx}, prob: {cur["rescore_lp"]}, hyp: {hyptext}\n history len: {len(history_text.split())}')
 
             if cur['rescore_lp'] > best_log_p:
                 best_log_p = cur['rescore_lp']
@@ -176,6 +147,9 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code
         utt['best_logp'] = best_log_p
         utt['best_hyp'] = best_hyp
         print(f'best logp: {best_log_p}')
+        #history_text += ' ' + best_hyp
+        history_text += ' ' + utt['beams'][0][0]['text'] # use original hypothesis as history to prevent context drift
+        history_text = remove_multiple_spaces(history_text)
         prev_end = segment_end
     return recording_hyps
         
@@ -193,28 +167,21 @@ def main(args, hypothesis):
     tokenizer_path = os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
     tokenizer = tools.load_tokenizer(tokenizer_path)
     
-<<<<<<< HEAD
-
-=======
->>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
-    model = autoload(config=config, tokenizer=tokenizer)
-    #model = lm_utils.load_model(config, tokenizer, max_len=torch.inf)
+    model = lm_utils.load_model(config, tokenizer, max_len=torch.inf)
     epoch, val_loss  = model_utils.load_checkpoint(args=argsclass(**{'checkpoint': args.checkpoint}), model=model, force_cpu=True)
     modeltype = config['model']['modeltype']
     print(f'Loaded model {args.checkpoint} with epoch {epoch} and val_loss {val_loss}\n Model type: {modeltype}')
     model.to(device)
     model.eval()
-    
-    if hypothesis.__class__.__name__ == 'list': # only a list if it hasn't been processed yet   
-        assert args.use_cached_scores == False, 'need processed hypothesis lists to use cached scores'
-        hypothesis = sort_hypothesis_by_recording(hypothesis)
-        hypothesis = order_recordings_by_start_time(hypothesis)
+
+    hypothesis = sort_hypothesis_by_recording(hypothesis)
+    hypothesis = order_recordings_by_start_time(hypothesis)
 
     hypothesis = compute_all_ppls(args, model, tokenizer, hypothesis)
     wer = compute_rescore_wer(hypothesis)
     if not args.no_wandb:
         wandb.log({'wer': wer})
-    elif args.saveas != '':
+    else:
         with open(args.saveas, 'wb') as f:
             pkl.dump(hypothesis, f)
     print(f'WER: {wer}')
@@ -224,32 +191,23 @@ def main(args, hypothesis):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-<<<<<<< HEAD
-    parser.add_argument("--hyppkl", type=str, default='./2p5k_dev_rescored_nolm.pkl')
-=======
-    parser.add_argument("--hyppkl", type=str, default='./dev_rescored.pkl')
->>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
+    parser.add_argument("--hyppkl", type=str, default='tedlium_hyps.pkl')
     parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml')
     parser.add_argument('--device', type=str, default='auto')
     #parser.add_argument('--tlm_threshold', help='if TLM logp is lower than this threshold TLM won\'t be interpolated', type=float, default=-20)
     parser.add_argument('--checkpoint', type=str, default='./checkpoints/pg19checkpoints_dropout10_nths/pg_19_ft_checkpoint_47_id_91.pt')
     parser.add_argument('--max_utt_gap', type=float, default=10.0)
-    parser.add_argument('--saveas', type=str, default='')
+    parser.add_argument('--saveas', type=str, default='ppls.pkl')
 
-    parser.add_argument('--length_penalty', type=float, default=0.0) 
+    parser.add_argument('--length_penalty', type=float, default=0.3) # not used
     parser.add_argument('--stop_at_beam', type=int, default=25)
     parser.add_argument('--tlm_scale', type=float, default=0.2) # linearly scale TLM logp by this factor
-<<<<<<< HEAD
-    parser.add_argument('--am_scale', type=float, default=1.0) # linearly scale AM logp by this factor')
-    parser.add_argument('-alpha','--interpolation_weight', type=float, default=1.0) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
-=======
     parser.add_argument('--am_scale', type=float, default=0.4) # linearly scale AM logp by this factor')
     parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.85) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
->>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
     parser.add_argument('--temperature', type=float, default=0.85) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
-    parser.add_argument('-use_cache','--use_cached_scores', action='store_false', help='whether to use cached scores from previous runs rather than recomputing them ')
 
-    parser.add_argument('-history','--max_history_len', type=int, default=-1)
+
+    parser.add_argument('-history','--max_history_len', type=int, default=800)
     
 
     parser.add_argument('--no_wandb', action='store_true')

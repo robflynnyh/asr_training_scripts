@@ -58,13 +58,21 @@ def main(args):
     device = torch.device(args.device)
     #tokenizer = AutoTokenizer.from_pretrained('EleutherAI/gpt-neo-125M')
     tokenizer = AutoTokenizer.from_pretrained(
+<<<<<<< HEAD
         "EleutherAI/pythia-70m",
+=======
+        "EleutherAI/pythia-19m",
+>>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
         revision="step143000"
     )
     corpus = tools.load_corpus()
     #model = AutoModelForCausalLM.from_pretrained('EleutherAI/gpt-neo-125M')
     model = GPTNeoXForCausalLM.from_pretrained(
+<<<<<<< HEAD
         "EleutherAI/pythia-70m",
+=======
+        "EleutherAI/pythia-19m",
+>>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
         revision="step143000"
     )
 
@@ -101,7 +109,11 @@ def main(args):
         ttl_words = 0
 
         for text_sample in tqdm(samples):
+<<<<<<< HEAD
             txt = tokenizer.bos_token + text_sample  # WHAT ABOUT EEOS TOKEN? !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+=======
+            txt = tokenizer.bos_token + text_sample
+>>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
             input_ids = tokenizer(txt, return_tensors='pt')
             token_lens = input_ids['input_ids'].shape[1]
 
