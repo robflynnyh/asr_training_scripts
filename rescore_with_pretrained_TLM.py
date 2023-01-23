@@ -25,6 +25,8 @@ from speachy.rescoring.tools import (
 import wandb
 
 from transformers import GPTNeoXForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer, GPT2LMHeadModel
+
 
 
 from speachy.rescoring.scripts.compute_rescore_wer import main as compute_rescore_wer
@@ -39,9 +41,9 @@ def get_text_probability(args, model, tokenizer, text, history):
     loss_fct = torch.nn.NLLLoss(ignore_index=-100, reduction='none')
     loss_log_softmax = torch.nn.LogSoftmax(dim=-1)
     if len(history) > 0:
-        history = tokenizer.bos_token + history
+        history = tokenizer.bos_token + history + tokenizer.eos_token
     else:
-        text = tokenizer.bos_token + text
+        text = tokenizer.bos_token + text + tokenizer.eos_token
     tokens, history_tokens = tokenizer(text, return_tensors='pt'), tokenizer(history, return_tensors='pt')
     token_prev = tokens
     history_len = len(history_tokens['input_ids'][0])
@@ -53,7 +55,7 @@ def get_text_probability(args, model, tokenizer, text, history):
     outputs = model(**tokens)
     logits = outputs.logits
     labels = tokens['input_ids'].clone()
-    if history_len > 0:
+    if history_len > 0: ## check if this is correct
         labels = labels[:, history_len:]
         logits = logits[:, history_len - 1:, :]
         shift_logits = logits[:, :-1, :].contiguous()
@@ -69,54 +71,6 @@ def get_text_probability(args, model, tokenizer, text, history):
     print(tx_prob)
     return tx_prob
 
-@torch.no_grad()
-def get_text_probability__(args, model, tokenizer, text, history):
-    device = torch.device(args.device)
-    tokens, history_tokens = tokenizer.text_to_ids(text), tokenizer.text_to_ids(history)
-    token_prev = tokens
-    tokens, history_tokens = torch.tensor(tokens).unsqueeze(0).long(), torch.tensor(history_tokens).unsqueeze(0).long()
-  
-    history_len = len(history_tokens[0])
-    if history_len > 0:
-        tokens = torch.cat((history_tokens, tokens), dim=1)
-
-  
-    token_lens = torch.tensor([len(tokens[0])]) + 1 # add 1 for the <bos> token
-    tokens, token_lens = tokens.to(device), token_lens.to(device)
-    tokens = lm_utils.add_bos(tokens, bos_token_id=0)
-    targets = tokens.clone()
-    targets[:, :-1] = tokens[:, 1:]
-    targets = lm_utils.add_eos(targets, eos_id=0, token_lens=token_lens)
-    mask = lm_utils.token_lens_to_mask(token_lens)
-    targets = lm_utils.mark_padding(targets, mask, pad_id=-100)
-
-    model_args = {'x': tokens, 'mask': mask} if isfalse(callable(getattr(model, 'get_args', False))) \
-        else model.get_args(tokens=tokens, mask=mask, lengths=token_lens)
-
-    logits = model(**model_args)
-   
-    # remove first and last token
-    logits = logits[:, history_len + 1:-1, :]
-    targets = targets[:, history_len + 1:-1]
-
-    # remove eos/bos from probabilities
-    logits = logits[:, :, 1:]
-    # shift targets by 1 (no more eos/bos)
-    targets -= 1
-
-    # temperature
-    logits = logits / args.temperature
-    logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
-
-    # then take the log of the probability of the target
-    #print(logprobs.argmax(dim=-1)[0,:20], targets[0,:20])  # DEBUG !!
-    #print(tokenizer.ids_to_text(logprobs.argmax(dim=-1)[0,:50].tolist()), '- :SPAACE: -', tokenizer.ids_to_text(targets[0,:50].tolist()))
-    logprobs = logprobs.squeeze(0).gather(1, targets.squeeze(0).unsqueeze(1))
-
-    # get total logprob
-    logprobs = logprobs.sum() 
-    
-    return logprobs.to('cpu')
 
 def remove_multiple_spaces(text):
     return ' '.join(text.split())
@@ -189,14 +143,15 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps):
         
 
 def compute_all_ppls(args, model, tokenizer, hypothesis):
-    for key in hypothesis.keys():
+    for i, key in enumerate(hypothesis.keys()):
         recording = hypothesis[key]
-        print(f'Computing perplexities for recording {key}')
+        print(f'Computing perplexities for recording {key} - {i+1}/{len(hypothesis.keys())}')
         hypothesis[key] = compute_beam_ppls(args, model, tokenizer, recording)
     return hypothesis
 
 def main(args, hypothesis):
     device = torch.device(args.device)
+    '''
     revision="step143000"
     tokenizer = AutoTokenizer.from_pretrained(
         args.model,
@@ -206,6 +161,9 @@ def main(args, hypothesis):
         args.model,
         revision=revision,
     )
+    '''
+    tokenizer = AutoTokenizer.from_pretrained('gpt2')
+    model = GPT2LMHeadModel.from_pretrained('gpt2')
     print(f'Loaded model {args.model}')
     model.to(device)
     model.eval()
@@ -217,7 +175,7 @@ def main(args, hypothesis):
     wer = compute_rescore_wer(hypothesis)
     if not args.no_wandb:
         wandb.log({'wer': wer})
-    else:
+    elif args.saveas != '':
         with open(args.saveas, 'wb') as f:
             pkl.dump(hypothesis, f)
     print(f'WER: {wer}')
@@ -230,18 +188,18 @@ if __name__ == '__main__':
     parser.add_argument("--hyppkl", type=str, default='tedlium_hyps.pkl')
     parser.add_argument('--device', type=str, default='auto')
     #parser.add_argument('--tlm_threshold', help='if TLM logp is lower than this threshold TLM won\'t be interpolated', type=float, default=-20)
-    parser.add_argument('-model','--model', type=str, default='EleutherAI/pythia-19m')
+    parser.add_argument('-model','--model', type=str, default='EleutherAI/pythia-1b')
     parser.add_argument('--max_utt_gap', type=float, default=10.0)
-    parser.add_argument('--saveas', type=str, default='ppls.pkl')
+    parser.add_argument('--saveas', type=str, default='')
 
-    parser.add_argument('--stop_at_beam', type=int, default=5)
+    parser.add_argument('--stop_at_beam', type=int, default=10)
     parser.add_argument('--tlm_scale', type=float, default=0.4) # linearly scale TLM logp by this factor
     parser.add_argument('--am_scale', type=float, default=1.0) # linearly scale AM logp by this factor')
-    parser.add_argument('-alpha','--interpolation_weight', type=float, default=1.0) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
+    parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.9) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
     parser.add_argument('--temperature', type=float, default=1.0) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
 
 
-    parser.add_argument('--max_history_len', type=int, default=350)
+    parser.add_argument('--max_history_len', type=int, default=0)
     
 
     parser.add_argument('--no_wandb', action='store_true')

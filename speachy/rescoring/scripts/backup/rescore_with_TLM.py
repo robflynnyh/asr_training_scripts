@@ -100,8 +100,9 @@ def trim_cache(kv_cache, max_len):
     if max_len == -1:
         return kv_cache
     if kv_cache['cache_lengths'] > max_len:
+        print(kv_cache['cache'].shape)
+        bos = kv_cache['cache'][:, :, :, :, 0, :].unsqueeze(-2).clone()
         kv_cache['cache'] = kv_cache['cache'][:, :, :, :, -max_len:, :]
-        bos = kv_cache['cache'][:, :, :, :, 0, :].unsqueeze(-2)
         kv_cache['cache'] = torch.cat([bos, kv_cache['cache']], dim=-2)
         kv_cache['cache_lengths'] = torch.tensor([kv_cache['cache'].shape[-2]]).to(kv_cache['cache_lengths'].device)
     return kv_cache
@@ -181,9 +182,9 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code
         
 
 def compute_all_ppls(args, model, tokenizer, hypothesis):
-    for key in hypothesis.keys():
+    for i, key in enumerate(hypothesis.keys()):
         recording = hypothesis[key]
-        print(f'Computing perplexities for recording {key}')
+        print(f'Computing perplexities for recording {key}, {i+1}/{len(hypothesis.keys())}')
         hypothesis[key] = compute_beam_ppls(args, model, tokenizer, recording)
     return hypothesis
 
@@ -193,7 +194,6 @@ def main(args, hypothesis):
     tokenizer_path = os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
     tokenizer = tools.load_tokenizer(tokenizer_path)
     
-
     model = autoload(config=config, tokenizer=tokenizer)
     #model = lm_utils.load_model(config, tokenizer, max_len=torch.inf)
     epoch, val_loss  = model_utils.load_checkpoint(args=argsclass(**{'checkpoint': args.checkpoint}), model=model, force_cpu=True)
@@ -221,7 +221,7 @@ def main(args, hypothesis):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hyppkl", type=str, default='./2p5k_dev_rescored_nolm.pkl')
+    parser.add_argument("--hyppkl", type=str, default='./dev_rescored.pkl')
     parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml')
     parser.add_argument('--device', type=str, default='auto')
     #parser.add_argument('--tlm_threshold', help='if TLM logp is lower than this threshold TLM won\'t be interpolated', type=float, default=-20)
@@ -229,13 +229,13 @@ if __name__ == '__main__':
     parser.add_argument('--max_utt_gap', type=float, default=10.0)
     parser.add_argument('--saveas', type=str, default='')
 
-    parser.add_argument('--length_penalty', type=float, default=0.0) 
+    parser.add_argument('--length_penalty', type=float, default=-2.0) 
     parser.add_argument('--stop_at_beam', type=int, default=25)
     parser.add_argument('--tlm_scale', type=float, default=0.2) # linearly scale TLM logp by this factor
-    parser.add_argument('--am_scale', type=float, default=1.0) # linearly scale AM logp by this factor')
-    parser.add_argument('-alpha','--interpolation_weight', type=float, default=1.0) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
+    parser.add_argument('--am_scale', type=float, default=0.4) # linearly scale AM logp by this factor')
+    parser.add_argument('-alpha','--interpolation_weight', type=float, default=0.85) # interpolate TLM and NGRAM logp by this factor (alpha*tlm + (1-alpha)*ngram) 
     parser.add_argument('--temperature', type=float, default=0.85) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
-    parser.add_argument('-use_cache','--use_cached_scores', action='store_false', help='whether to use cached scores from previous runs rather than recomputing them ')
+    parser.add_argument('-use_cache','--use_cached_scores', action='store_true', help='whether to use cached scores from previous runs rather than recomputing them ')
 
     parser.add_argument('-history','--max_history_len', type=int, default=-1)
     

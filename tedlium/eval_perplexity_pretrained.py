@@ -58,20 +58,20 @@ def main(args):
     device = torch.device(args.device)
     #tokenizer = AutoTokenizer.from_pretrained('EleutherAI/gpt-neo-125M')
     tokenizer = AutoTokenizer.from_pretrained(
-        "EleutherAI/pythia-19m",
+        "EleutherAI/pythia-70m",
         revision="step143000"
     )
     corpus = tools.load_corpus()
     #model = AutoModelForCausalLM.from_pretrained('EleutherAI/gpt-neo-125M')
     model = GPTNeoXForCausalLM.from_pretrained(
-        "EleutherAI/pythia-19m",
+        "EleutherAI/pythia-70m",
         revision="step143000"
     )
 
     model.to(device)
     model.eval()
 
-    meetings = niiddl.prepare_partition(corpus[args.split])
+    meetings = niiddl.prepare_partition(corpus[args.split]) 
     loss_fct = torch.nn.CrossEntropyLoss(reduction='none')
 
     if args.shuffle_sentences:
@@ -101,7 +101,7 @@ def main(args):
         ttl_words = 0
 
         for text_sample in tqdm(samples):
-            txt = tokenizer.bos_token + text_sample
+            txt = tokenizer.bos_token + text_sample  # WHAT ABOUT EEOS TOKEN? !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
             input_ids = tokenizer(txt, return_tensors='pt')
             token_lens = input_ids['input_ids'].shape[1]
 
@@ -114,7 +114,7 @@ def main(args):
            
             lm_logits = logits
             shift_logits = lm_logits[:, :-1, :].contiguous()
-            shift_labels = labels[:, 1:].contiguous()
+            shift_labels = labels[:, 1:].contiguous() # WHAT ABOUT EEOS TOKEN? !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
             loss = loss.view(shift_labels.size())
             losses += loss.sum().item()

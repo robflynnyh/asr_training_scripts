@@ -354,6 +354,7 @@ class transformer(nn.Module):
         ##
         return q_mask, attn_mask, total_len, x_len, cache_len, pos_bias
 
+
     def forward(self, x, length=None, self_condtioning=None, cache=None):
         intermediate_logits = []
         cached_kvs = []

@@ -100,8 +100,9 @@ def trim_cache(kv_cache, max_len):
     if max_len == -1:
         return kv_cache
     if kv_cache['cache_lengths'] > max_len:
+        print(kv_cache['cache'].shape)
+        bos = kv_cache['cache'][:, :, :, :, 0, :].unsqueeze(-2).clone()
         kv_cache['cache'] = kv_cache['cache'][:, :, :, :, -max_len:, :]
-        bos = kv_cache['cache'][:, :, :, :, 0, :].unsqueeze(-2)
         kv_cache['cache'] = torch.cat([bos, kv_cache['cache']], dim=-2)
         kv_cache['cache_lengths'] = torch.tensor([kv_cache['cache'].shape[-2]]).to(kv_cache['cache_lengths'].device)
     return kv_cache
@@ -135,7 +136,8 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code
                 continue
 
             hyptext = cur['text']
-            AM_prob, NGRAM_prob = torch.tensor(cur['am_score']) * args.am_scale, torch.tensor(cur['ngram_score'])
+            AM_prob, NGRAM_prob = torch.tensor(cur['am_score']), torch.tensor(cur['ngram_score'])
+            AM_prob = (AM_prob +3.4360484904332695) / 3.9842864474648816
 
             if not args.use_cached_scores:
                 prob, cache, length_penalty = get_text_probability(args, model, tokenizer, hyptext, cached_states=kv_cache)
@@ -150,9 +152,13 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code
 
             prob = NGRAM_prob if prob.isnan() or prob == float('-inf') or prob == 0 else prob
             cur['tlm_prob'] = prob
+            prob = (prob +110.96556030975336) / 69.37794067180947
+            
             cur['length_penalty'] = length_penalty
             penalize_len = length_penalty * args.length_penalty
-            cur['rescore_lp'] = (interpolate(am_score=AM_prob, ngram_score=NGRAM_prob, lm_score=prob*args.tlm_scale, alpha=args.interpolation_weight) - penalize_len).item()
+            prob = prob * args.tlm_scale - penalize_len
+        
+            cur['rescore_lp'] = (prob + AM_prob).item()
    
             print(f'beam: {idx}, prob: {cur["rescore_lp"]}, hyp: {hyptext}\n')
 
@@ -181,39 +187,66 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code
         
 
 def compute_all_ppls(args, model, tokenizer, hypothesis):
-    for key in hypothesis.keys():
+    for i, key in enumerate(hypothesis.keys()):
         recording = hypothesis[key]
-        print(f'Computing perplexities for recording {key}')
+        print(f'Computing perplexities for recording {key}, {i+1}/{len(hypothesis.keys())}')
         hypothesis[key] = compute_beam_ppls(args, model, tokenizer, recording)
     return hypothesis
 
+def get_standardisation_stats(hypothesis):
+    am_scores, tlm_scores = [], []
+    for i, key in enumerate(hypothesis.keys()):
+        recording = hypothesis[key]
+        print(f'getting standardisation stats for recording {key}, {i+1}/{len(hypothesis.keys())}')
+        for utt in tqdm(recording):
+            cur = utt['beams'][0][0]
+            if 'tlm_prob' not in cur:
+                continue
+            am_score = torch.tensor(cur['am_score'])
+            tlm_score = torch.tensor(cur['tlm_prob'])
+            am_scores.append(am_score)
+            tlm_scores.append(tlm_score)
+    assert len(am_scores) == len(tlm_scores) and len(am_scores) > 0, 'No scores found or mismatched scores'
+    am_scores = torch.stack(am_scores)
+    tlm_scores = torch.stack(tlm_scores)
+    am_mean, am_std = am_scores.mean(), am_scores.std()
+    tlm_mean, tlm_std = tlm_scores.mean(), tlm_scores.std()
+    print(f'AM mean: {am_mean}, AM std: {am_std}')
+    print(f'TLM mean: {tlm_mean}, TLM std: {tlm_std}')
+    return {'am_mean': am_mean, 'am_std': am_std, 'tlm_mean': tlm_mean, 'tlm_std': tlm_std}
+
+
 def main(args, hypothesis):
-    device = torch.device(args.device)
-    config = lm_utils.load_config(args.config)
-    tokenizer_path = os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
-    tokenizer = tools.load_tokenizer(tokenizer_path)
-    
-    model = autoload(config=config, tokenizer=tokenizer)
-    #model = lm_utils.load_model(config, tokenizer, max_len=torch.inf)
-    epoch, val_loss  = model_utils.load_checkpoint(args=argsclass(**{'checkpoint': args.checkpoint}), model=model, force_cpu=True)
-    modeltype = config['model']['modeltype']
-    print(f'Loaded model {args.checkpoint} with epoch {epoch} and val_loss {val_loss}\n Model type: {modeltype}')
-    model.to(device)
-    model.eval()
+    if args.use_cached_scores == False:
+        device = torch.device(args.device)
+        config = lm_utils.load_config(args.config)
+        tokenizer_path = os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
+        tokenizer = tools.load_tokenizer(tokenizer_path)
+        model = autoload(config=config, tokenizer=tokenizer)
+        epoch, val_loss  = model_utils.load_checkpoint(args=argsclass(**{'checkpoint': args.checkpoint}), model=model, force_cpu=True)
+        modeltype = config['model']['modeltype']
+        print(f'Loaded model {args.checkpoint} with epoch {epoch} and val_loss {val_loss}\n Model type: {modeltype}')
+        model.to(device)
+        model.eval()
+    else:
+        model, tokenizer = None, None
     
     if hypothesis.__class__.__name__ == 'list': # only a list if it hasn't been processed yet   
         assert args.use_cached_scores == False, 'need processed hypothesis lists to use cached scores'
         hypothesis = sort_hypothesis_by_recording(hypothesis)
         hypothesis = order_recordings_by_start_time(hypothesis)
 
-    hypothesis = compute_all_ppls(args, model, tokenizer, hypothesis)
-    wer = compute_rescore_wer(hypothesis)
-    if not args.no_wandb:
-        wandb.log({'wer': wer})
-    elif args.saveas != '':
-        with open(args.saveas, 'wb') as f:
-            pkl.dump(hypothesis, f)
-    print(f'WER: {wer}')
+    if not args.compute_standardisation_stats:
+        hypothesis = compute_all_ppls(args, model, tokenizer, hypothesis)
+        wer = compute_rescore_wer(hypothesis)
+        if not args.no_wandb:
+            wandb.log({'wer': wer})
+        elif args.saveas != '':
+            with open(args.saveas, 'wb') as f:
+                pkl.dump(hypothesis, f)
+        print(f'WER: {wer}')
+    else:
+        get_standardisation_stats(hypothesis)
 
     
     
@@ -236,11 +269,14 @@ if __name__ == '__main__':
     parser.add_argument('--temperature', type=float, default=0.85) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
     parser.add_argument('-use_cache','--use_cached_scores', action='store_true', help='whether to use cached scores from previous runs rather than recomputing them ')
 
+    parser.add_argument('--compute_standardisation_stats', action='store_true', help='whether to compute standardisation stats for AM and TLM scores')
     parser.add_argument('-history','--max_history_len', type=int, default=-1)
-    
 
     parser.add_argument('--no_wandb', action='store_true')
     args = parser.parse_args()
+
+    if args.compute_standardisation_stats and not args.use_cached_scores:
+        raise ValueError('please compute cached scores first before computing standardisation stats')
 
     if args.device == 'auto':
         args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
