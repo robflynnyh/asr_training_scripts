@@ -100,6 +100,7 @@ def trim_cache(kv_cache, max_len):
     if max_len == -1:
         return kv_cache
     if kv_cache['cache_lengths'] > max_len:
+        print(kv_cache['cache'].shape)
         bos = kv_cache['cache'][:, :, :, :, 0, :].unsqueeze(-2).clone()
         kv_cache['cache'] = kv_cache['cache'][:, :, :, :, -max_len:, :]
         kv_cache['cache'] = torch.cat([bos, kv_cache['cache']], dim=-2)
@@ -271,6 +272,7 @@ def main(args, hypothesis):
             pkl.dump(hypothesis, f)
     print(f'WER: {wer}')
 
+
     
     
 
@@ -295,6 +297,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--no_wandb', action='store_true')
     args = parser.parse_args()
+
 
     if args.device == 'auto':
         args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
