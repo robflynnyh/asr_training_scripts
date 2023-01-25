@@ -19,10 +19,21 @@ from speachy.utils.general import (
     draw_text,
 )
 
+from speachy.lm.tools.train import (
+    loss_ce,
+    batch_to_device,
+    token_lens_to_mask,
+    add_bos,
+    add_eos,
+    mark_padding
+)
+
 from speachy.utils.general import load_checkpoint
 from speachy.lm.tools.loading import autoload
 from speachy.utils.helpers import  exists, isfalse, istrue
 from speachy.utils.general.training_loop import optimizer, update_schedular
+from contextlib import nullcontext
+from tqdm import tqdm
 
 from torch.cuda.amp import GradScaler   
 
@@ -33,57 +44,53 @@ def get_edit_distance(hyps, target):
 
 flatten_nested_list = lambda l: [item for sublist in l for item in sublist]
     
-def tokenize_and_pad(utterances, tokenizer):
+def tokenize_and_pad(utterances, tokenizer): # returns padded utterances and their lengths
     tokenized = [tokenizer.text_to_ids(utt) for utt in utterances]
     max_len = max(map(len, tokenized))
-    return np.array([utt + [0] * (max_len - len(utt)) for utt in tokenized])
+    padded_utts = np.array([utt + [0] * (max_len - len(utt)) for utt in tokenized])
+    return padded_utts, np.array(list(map(len, tokenized)))
 
 def get_sub_batches(batch, tokenizer):
     proc_utts = lambda utts: tokenize_and_pad(flatten_nested_list(utts), tokenizer)
     sub_batches = []
     max_len = max(map(len, batch))
     for i in range(max_len):
-        sub_batches.append({
-            'utterances': [],
-            'scores': [],
-            'lengths': [],
-        })
+        sub_batches.append({'utterances': [],'scores': [],'sb_lengths': [],})
         for el in batch:
-            if len(el) > i:
-                sub_batches[-1]['utterances'].append(el[i][0])
-                sub_batches[-1]['scores'].append(el[i][1])
-                sub_batches[-1]['lengths'].append(len(el[i][0]))
-            else:
-                sub_batches[-1]['utterances'].append(-1)
-                sub_batches[-1]['scores'].append(-1)
-                sub_batches[-1]['lengths'].append(-1)
-    non_empty_indices = np.arange(len(sub_batches[0]['lengths']))
+            case = len(el) > i
+            sub_batches[-1]['utterances'].append(el[i][0] if case else -1)
+            sub_batches[-1]['scores'].append(el[i][1] if case else -1)
+            sub_batches[-1]['sb_lengths'].append(len(el[i][0]) if case else -1)
+     
+    non_empty_indices = np.arange(len(sub_batches[0]['sb_lengths']))
 
     for i, sub_batch in enumerate(sub_batches):
-        sb_utts, sb_scores, sb_lengths = np.array(sub_batch['utterances'], dtype=object), \
-            np.array(sub_batch['scores'], dtype=object), np.array(sub_batch['lengths'], dtype=object)
+        sb_utts, sb_scores, sb_lengths = [np.array(el, dtype=object) for el in (sub_batch['utterances'], sub_batch['scores'], sub_batch['sb_lengths'])]
         non_empty = non_empty_indices[sb_lengths != -1]
         # slice based on non empty of previous sub batch
         prev_fetch = None
         if i != 0:
-            prev_lengths = sub_batches[i-1]['lengths']
+            prev_lengths = sub_batches[i-1]['sb_lengths']
             prev_non_empty = sub_batches[i-1]['non_empty']
             diff_from = ((prev_lengths != -1) == (sb_lengths != -1))[prev_non_empty]
             prev_fetch = np.arange(len(prev_non_empty))[diff_from]
+            
         sub_batches[i] = {
             'utterances': sb_utts,
             'scores': sb_scores,
-            'lengths': sb_lengths,
+            'sb_lengths': sb_lengths,
             'non_empty': non_empty,
             'prev_fetch': prev_fetch 
         }
     
     for i, sub_batch in enumerate(sub_batches):
+        padded_utts, acc_lengths = proc_utts(sub_batch['utterances'][sub_batch['non_empty']].tolist())
         sub_batches[i] = {
-            'utterances': proc_utts(sub_batch['utterances'][sub_batch['non_empty']].tolist()),
-            'scores': sub_batch['scores'][sub_batch['non_empty']],
-            'lengths': sub_batch['lengths'][sub_batch['non_empty']],
-            'prev_fetch': sub_batch['prev_fetch'] # indices to fetch the states from previous sub batch
+            'utterances': torch.as_tensor(padded_utts),
+            'lengths': torch.as_tensor(acc_lengths),
+            'scores': torch.tensor(flatten_nested_list((sub_batch['scores'][sub_batch['non_empty']]).tolist())),
+            'sb_lengths': torch.as_tensor(sub_batch['sb_lengths'][sub_batch['non_empty']].astype(int)),
+            'prev_fetch': torch.as_tensor(sub_batch['prev_fetch']) if sub_batch['prev_fetch'].__class__.__name__ != 'NoneType' else None# indices to fetch the states from previous sub batch
         }
     return sub_batches
 
@@ -121,18 +128,145 @@ def create_dataset_samples(recordings, num_utterances, num_negatives, max_gap=10
     return samples
 
 
-def sampler(samples, batch_size, tokenizer, shuffle=True):
-    sample_indices = np.arange(len(samples))
-    np.random.shuffle(sample_indices) if shuffle else None
-    for i in range(0, len(samples), batch_size):
-        yield get_sub_batches([samples[i] for i in sample_indices[i:i+batch_size]], tokenizer)
+class Sampler(object):
+    def __init__(self, samples, batch_size, tokenizer, shuffle=True):
+        self.samples = samples
+        self.batch_size = batch_size
+        self.tokenizer = tokenizer
+        self.shuffle = shuffle
+        self.sample_indices = np.arange(len(self.samples))
+        np.random.shuffle(self.sample_indices) if self.shuffle else None
+        self.generator = self.__generator__()
+
+    def __generator__(self):
+        for i in range(0, len(self.samples), self.batch_size):
+            yield get_sub_batches([self.samples[i] for i in self.sample_indices[i:i+self.batch_size]], self.tokenizer)
+
+    def __iter__(self):
+        return self
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __next__(self):
+        return next(self.generator)
       
+@torch.no_grad()
+def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
+    model.eval()
+    pbar = tqdm(val_dataloader, total=len(val_dataloader))
+    wers = []
+    losses = []
+    print('Evaluation epoch')
+    for batch in pbar:
+        tokens, token_lens = batch_to_device(batch, device)
+    
+        token_lens += 1 # add 1 for bos
+        tokens = add_bos(tokens, bos_token_id=0)
+        targets = tokens.clone()
+        targets[:, :-1] = tokens[:, 1:]
+        targets = add_eos(targets, eos_id=0, token_lens=token_lens)
+        
+        mask = token_lens_to_mask(token_lens)
+        targets = mark_padding(targets, mask, pad_id=-100)
+
+        model_args = {'x': tokens, 'mask': mask} if isfalse(callable(getattr(model, 'get_args', False))) \
+            else model.get_args(tokens=tokens, mask=mask, lengths=token_lens)
+
+        model_out = model(**model_args)
+        
+        if callable(getattr(model, 'process_labels', None)):
+            targets = model.process_labels(targets)
+
+        loss = loss_ce(logits=model_out, labels=targets, ignore_index=-100)
+        losses.append(loss.item())
+
+        if sanity_check:
+            return True
+
+    return  sum(losses) / len(losses)
+
+@torch.no_grad()
+def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
+    model.eval()
+    pbar = tqdm(val_dataloader, total=len(val_dataloader))
+    losses = []
+    print('Evaluation epoch')
+    for batch in pbar:
+        prev_states = None
+        for sub_batch_ in batch:
+            sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True) 
+            tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
+            token_lens += 1 # add 1 for bos
+            tokens = add_bos(tokens, bos_token_id=0)
+            targets = tokens.clone()
+            targets[:, :-1] = tokens[:, 1:] # shift 
+            targets = add_eos(targets, eos_id=0, token_lens=token_lens)
+            mask = token_lens_to_mask(token_lens)
+            targets = mark_padding(targets, mask, pad_id=-100)
+
+            logits, _, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states)
+            loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
+
+            losses.append(loss.item())
+            prev_fetch = sub_batch['prev_fetch']
+            prev_states = {
+                'cache_lengths': cached_kvs['cache_lengths'][prev_fetch],
+                'cache': cached_kvs['cache'][prev_fetch],
+            }
+
+        if sanity_check:
+            return True
+
+    return  sum(losses) / len(losses)
 
 
-def train(loader, model):
-    for batch in loader:
-        for sub_batch in batch:
-            pass
+def intermediate_loss(loss_fn, interim_logits, targets):
+    if not exists(interim_logits):
+        return None
+    interims = torch.empty(interim_logits.shape[0], device=interim_logits.device)
+    for i in range(interim_logits.shape[0]):
+        interims[i] = loss_fn(interim_logits[i], targets)
+    return torch.mean(interims)
+
+def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None):
+    model.train()
+    pbar = tqdm(train_dataloader, total=len(train_dataloader))
+    losses = []
+    loss_iterim = []
+    autocast_device = 'cuda' if torch.cuda.is_available() else 'cpu' # for autocast if using mixed precision
+    print('Training epoch')
+    for batch in pbar:
+        prev_states = None
+
+        with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
+            for sub_batch_ in batch:
+                sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True) 
+                tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
+                token_lens += 1 # add 1 for bos
+                tokens = add_bos(tokens, bos_token_id=0)
+                targets = tokens.clone()
+                targets[:, :-1] = tokens[:, 1:] # shift 
+                targets = add_eos(targets, eos_id=0, token_lens=token_lens)
+                mask = token_lens_to_mask(token_lens)
+                targets = mark_padding(targets, mask, pad_id=-100)
+
+                logits, interim_posteriors, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states)
+                loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
+                interim_loss = intermediate_loss(loss_ce, interim_posteriors, targets)
+                ## ending here for today :PPPP
+
+
+                losses.append(loss.item())
+                prev_fetch = sub_batch['prev_fetch']
+                prev_states = {
+                    'cache_lengths': cached_kvs['cache_lengths'][prev_fetch],
+                    'cache': cached_kvs['cache'][prev_fetch],
+                }
+
+    
+
+    return  sum(losses) / len(losses)
 
 '''    train_hyp = load_pkl(args.train_hyp)
     dev_hyp = load_pkl(args.dev_hyp)
