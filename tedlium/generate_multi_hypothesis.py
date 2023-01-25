@@ -31,12 +31,23 @@ def kenlm_decoder(arpa_, vocab, alpha=0.5, beta=0.8):
     print(f'Loaded KenLM model from {arpa} with alpha={alpha} and beta={beta}')
     return decoder
 
+def enable_dropout(model, dropout_rate=0.0):
+    if dropout_rate == 0.0:
+        return model
+    for m in model.modules():
+        if m.__class__.__name__.startswith('Dropout'):
+            m.train()
+            m.p = dropout_rate
+            m.inplace = True
+            print(f'Enabled dropout with rate {dropout_rate} in {m.__class__.__name__}')
+    return model
 
 @torch.no_grad()
 def evaluate(args, model, corpus, decoder):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
     model.eval()
+    model = enable_dropout(model, args.dropout_rate)
 
     hyp_data = []
 
@@ -171,10 +182,9 @@ if __name__ == '__main__':
     parser.add_argument('--split_speakers', action='store_true', help='if set, wont concat samples from different speakers, (concat_samples must be enabled)')
 
     parser.add_argument('-psl','--pass_segment_lengths', action='store_true', help='if set, will pass segment lens to the model, used with concat_samples for multi segment models')
-    
-
-
     parser.add_argument('-save','--save_outputs', default='', type=str, help='save outputs to file')
+    parser.add_argument('-dropout', '--dropout_rate', help='dropout at inference', default=0.0, type=float)
+
     args = parser.parse_args()
 
 

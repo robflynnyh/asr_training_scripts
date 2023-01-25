@@ -38,12 +38,32 @@ def save_attention_information(args, batch_num, additional_outputs, speaker_ids,
     data = {**additional_outputs, 'speaker_ids': speaker_ids, 'targets': targets}
     torch.save(data, os.path.join(args.save_attn_dir, f'attns_{batch_num}.pt'))
 
+def noise_audio(audio, noise_level):
+    if noise_audio == 0.0:
+        return audio
+    noise = torch.randn_like(audio)
+    noise = noise * noise_level
+    audio = audio + noise
+    return audio
+
+
+def enable_dropout(model, dropout_rate=0.0):
+    if dropout_rate == 0.0:
+        return model
+    for m in model.modules():
+        if m.__class__.__name__.startswith('Dropout'):
+            m.train()
+            m.p = dropout_rate
+            m.inplace = True
+            print(f'Enabled dropout with rate {dropout_rate} in {m.__class__.__name__}')
+    return model
 
 @torch.no_grad()
 def evaluate(args, model, corpus, decoder):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
     model.eval()
+    model = enable_dropout(model, args.dropout_rate)
 
     hyps = []
     refs = []
@@ -75,7 +95,8 @@ def evaluate(args, model, corpus, decoder):
         targets = [el[0] for el in batch['text']]
         targets = [el.replace(" '", "'") for el in targets] # change this in training so that it's not needed here
 
-     
+        audios = noise_audio(audios, args.noise_level)
+        
         model_out = model.forward(
             input_signal=audios, 
             input_signal_length=audio_lengths,
@@ -187,8 +208,10 @@ if __name__ == '__main__':
     
     parser.add_argument('-sclite','--sclite', action='store_true', help='if set, will eval with sclite')
     parser.add_argument('-sclite_dir', '--sclite_dir', type=str, default='./trns')
-
     parser.add_argument('-save','--save_outputs', default='', type=str, help='save outputs to file')
+    parser.add_argument('-noise', '--noise_level', help='add noise to audio', default=0.0, type=float)
+    parser.add_argument('-dropout', '--dropout_rate', help='dropout at inference', default=0.0, type=float)
+    
     args = parser.parse_args()
 
     assert isfalse(args.split_speakers) or args.concat_samples, 'seperate_speakers can only be enabled if concat_samples is enabled'

@@ -15,6 +15,7 @@ def write_to_log(log_file, data):
         f.write(data)
         f.write('\n')
 
+
 def load_checkpoint(args, model, optim=None, force_cpu=False):
     checkpoint_path = args.checkpoint
     print(checkpoint_path)
@@ -75,6 +76,10 @@ def save_schedular_data(args):
     }
     with open(args.schedular_data, 'w') as f:
         json.dump(tosave, f)
+
+def load_tokenizer(model_path:str):
+    tokenizer_spe = nemo_nlp.modules.get_tokenizer(tokenizer_name="sentencepiece", tokenizer_model=model_path)
+    return tokenizer_spe
 
 
 def draw_text(text):

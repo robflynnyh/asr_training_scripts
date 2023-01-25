@@ -9,6 +9,9 @@ import torch
 from collections import OrderedDict
 import argparse
 
+from omegaconf.omegaconf import OmegaConf
+from nemo.collections import nlp as nemo_nlp
+
 
 
 def model_surgery(state_dict, tofind, toreplace):
@@ -110,6 +113,7 @@ def run_cmd(cmd:str):
 def get_date():
     return str(datetime.datetime.now()).replace(' ', '_').replace(':', '-').replace('.', '-')
 
+
 def add_common_args(parser:argparse.ArgumentParser):
     parser.add_argument('--epochs', type=int, default=5000)
     parser.add_argument('--save_top_k', type=int, default=6)
@@ -132,3 +136,18 @@ def add_common_args(parser:argparse.ArgumentParser):
     parser.add_argument('--num_workers', type=int, default=1, help='number of workers for dataloader')
 
     return parser
+
+
+def get_parameters(model, verbose=False):
+    total_params = 0
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            total_params += param.numel()
+    if verbose:
+        print(f'\nTotal number of parameters: {total_params/1e6}M\n')
+    return total_params
+
+
+def load_pkl(path):
+    with open(path, 'rb') as f:
+        return pkl.load(f)

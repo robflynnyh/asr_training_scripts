@@ -100,7 +100,6 @@ def trim_cache(kv_cache, max_len):
     if max_len == -1:
         return kv_cache
     if kv_cache['cache_lengths'] > max_len:
-        print(kv_cache['cache'].shape)
         bos = kv_cache['cache'][:, :, :, :, 0, :].unsqueeze(-2).clone()
         kv_cache['cache'] = kv_cache['cache'][:, :, :, :, -max_len:, :]
         kv_cache['cache'] = torch.cat([bos, kv_cache['cache']], dim=-2)
@@ -171,7 +170,7 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code
     for utt in tqdm(recording_hyps):
         kv_cache = {'cache': kvs_to_cache['cache'].clone(), 'cache_lengths': kvs_to_cache['cache_lengths'].clone()} if kvs_to_cache is not None else None # np
         segment_start, segment_end = utt['meta_data']['timings'].values()
-        prev_end = segment_start if prev_end is None else prev_end
+        prev_end = segment_start if prev_end is None else prev_end # swap with segment_end??
         
         kv_cache = None if prev_end - segment_start > args.max_utt_gap else kv_cache
         kv_cache = trim_cache(kv_cache, max_history)
@@ -284,7 +283,7 @@ if __name__ == '__main__':
     #parser.add_argument('--tlm_threshold', help='if TLM logp is lower than this threshold TLM won\'t be interpolated', type=float, default=-20)
     parser.add_argument('--checkpoint', type=str, default='./checkpoints/pg19checkpoints_dropout10_nths/pg_19_ft_checkpoint_47_id_91.pt')
     parser.add_argument('--max_utt_gap', type=float, default=10.0)
-    parser.add_argument('--saveas', type=str, default='')
+    parser.add_argument('-save','--saveas', type=str, default='')
 
     parser.add_argument('--length_penalty', type=float, default=0.0) 
     parser.add_argument('--stop_at_beam', type=int, default=25)
