@@ -70,7 +70,7 @@ def get_text_probability(args, model, tokenizer, text, cached_states=None):
     logits = logits / args.temperature
     logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
 
-    logprobs = logprobs.squeeze(0).gather(1, targets.squeeze(0).unsqueeze(1)).squeeze()
+    logprobs = logprobs.squeeze(0).gather(1, targets.squeeze(0).unsqueeze(1)).squeeze() 
     logprobslen = logprobs.shape[0] if len(logprobs.shape) > 0 else 1
     #logprobslen = 1 if logprobslen == 0 else logprobslen
 

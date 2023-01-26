@@ -51,7 +51,7 @@ def tokenize_and_pad(utterances, tokenizer): # returns padded utterances and the
     padded_utts = np.array([utt + [0] * (max_len - len(utt)) for utt in tokenized])
     return padded_utts, np.array(list(map(len, tokenized)))
 
-def get_sub_batches(batch, tokenizer):
+def get_sub_batches(batch, tokenizer):  
     proc_utts = lambda utts: tokenize_and_pad(flatten_nested_list(utts), tokenizer)
     sub_batches = []
     max_len = max(map(len, batch))
@@ -117,7 +117,7 @@ def create_samples_from_recording(recording, num_utterances, num_negatives, max_
         error_rates = get_edit_distance(examples, target)
         samples[-1].append((examples, error_rates))
         prev_end = end_t
-        
+
     return samples
 
 def create_dataset_samples(recordings, num_utterances, num_negatives, max_gap=10.0, shuffle=True):
@@ -137,9 +137,11 @@ class Sampler(object):
         self.shuffle = shuffle
         self.sample_indices = np.arange(len(self.samples))
         np.random.shuffle(self.sample_indices) if self.shuffle else None
-        self.generator = self.__generator__()
+        print(f'shfl {shuffle}, {self.sample_indices[0]} (debug)')
 
-    def __generator__(self):
+        self.generator = self.__generator__() 
+
+    def __generator__(self): # pre-compute this, prepping batches on-the-fly is hurting utilization )::::
         for i in range(0, len(self.samples), self.batch_size):
             yield get_sub_batches([self.samples[i] for i in self.sample_indices[i:i+self.batch_size]], self.tokenizer)
 
@@ -147,7 +149,7 @@ class Sampler(object):
         return self
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.samples) // self.batch_size
 
     def __next__(self):
         return next(self.generator)
@@ -196,9 +198,20 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
     for batch in pbar:
         prev_states = None
         for ix, sub_batch_ in enumerate(batch):
-            print(f'sub_batch {ix} / {len(batch)}')
-            sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True) 
+            sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True)
+            #print(f'sub_batch {ix+1} / {len(batch)}')
+
+            prev_fetch, sb_lengths = sub_batch['prev_fetch'], sub_batch['sb_lengths']
             tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
+     
+            if exists(prev_states) and exists(prev_fetch): # prev fetch is a list of indices that are present in the current sub-batch 
+                prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
+                prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
+                sb_idxs = torch.arange(sb_lengths.size(0))
+                sb_idxs = torch.cat([sb_idxs[ix].repeat(sb_lengths[ix]) for ix in range(sb_lengths.size(0))]).to(device)
+                prev_states['cache'] = prev_states['cache'][:,:,sb_idxs] # PLEASE CONDENSE THIS WITH THE INDEXING ABOVE ROBERT PLEASE PLEASE PLEASE !!!!! GRRRRR
+                prev_states['cache_lengths'] = prev_states['cache_lengths'][sb_idxs]
+            
             token_lens += 1 # add 1 for bos
             tokens = add_bos(tokens, bos_token_id=0)
             targets = tokens.clone()
@@ -211,18 +224,13 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
             loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
 
             losses.append(loss.item())
-            prev_fetch = sub_batch['prev_fetch']
-            print(prev_fetch, cached_kvs['cache'].shape)
-            print(tokens.shape)
-            print(sub_batch['sb_lengths'])
-            sb_lengths = sub_batch['sb_lengths']
-            target_positions =  sb_lengths.cumsum(dim=0) - sb_lengths # get the first position of each sub-batch
-
-
-            prev_states = {
-                'cache_lengths': cached_kvs['cache_lengths'][prev_fetch],
-                'cache': cached_kvs['cache'][prev_fetch],
-            }
+            
+            target_positions = sb_lengths.cumsum(dim=0) - sb_lengths # get the first position of each sub-batch
+            
+            prev_states = { # cache is [L, KV, B, H, N, D] ! (L = layers, KV = key/value, B = batch, H = heads, N = num tokens, D = dim)
+                'cache_lengths': cached_kvs['cache_lengths'][target_positions],
+                'cache': cached_kvs['cache'][:, :, target_positions] # only keep states from the "gold" hypothesis
+            } if exists(cached_kvs) else None
 
         if sanity_check:
             return True
@@ -238,7 +246,7 @@ def intermediate_loss(loss_fn, interim_logits, targets):
         interims[i] = loss_fn(interim_logits[i], targets)
     return torch.mean(interims)
 
-def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None):
+def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None):
     model.train()
     pbar = tqdm(train_dataloader, total=len(train_dataloader))
     losses = []
@@ -249,9 +257,22 @@ def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, sc
         prev_states = None
         total_sub_batch_loss = 0
         with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
-            for sub_batch_ in batch:
+            for ix, sub_batch_ in enumerate(batch):
+                #print(f'sub_batch {ix+1} / {len(batch)}')
                 sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True) 
+                
                 tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
+                prev_fetch, sb_lengths = sub_batch['prev_fetch'], sub_batch['sb_lengths']
+
+                if exists(prev_states) and exists(prev_fetch): # prev fetch is a list of indices that are present in the current sub-batch 
+                    prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
+                    prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
+                    sb_idxs = torch.arange(sb_lengths.size(0))
+                    sb_idxs = torch.cat([sb_idxs[ix].repeat(sb_lengths[ix]) for ix in range(sb_lengths.size(0))]).to(device)
+                    prev_states['cache'] = prev_states['cache'][:,:,sb_idxs] # PLEASE CONDENSE THIS WITH THE INDEXING ABOVE ROBERT PLEASE PLEASE PLEASE !!!!! GRRRRR
+                    prev_states['cache_lengths'] = prev_states['cache_lengths'][sb_idxs] 
+                    #print('prev_states', prev_states['cache'].shape)
+
                 token_lens += 1 # add 1 for bos
                 tokens = add_bos(tokens, bos_token_id=0)
                 targets = tokens.clone()
@@ -264,15 +285,16 @@ def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, sc
                 loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
                 interim_loss = intermediate_loss(loss_ce, interim_posteriors, targets)
                 loss = interim_loss * INTERPOLATE + loss * (1 - INTERPOLATE) if exists(interim_loss) else loss
-                sb_loss_fraction = sub_batch['utterances'].shape[0] / train_dataloader.batch_size
-                total_sub_batch_loss += loss * sb_loss_fraction
-
-                prev_fetch = sub_batch['prev_fetch']
+                #sb_loss_fraction = sub_batch['utterances'].shape[0] / (train_dataloader.batch_size * args.utts_per_sample)
+                total_sub_batch_loss += loss #* sb_loss_fraction
+  
+                target_positions = sb_lengths.cumsum(dim=0) - sb_lengths # get the first position of each sub-batch
                 
-                prev_states = {
-                    'cache_lengths': cached_kvs['cache_lengths'][prev_fetch],
-                    'cache': cached_kvs['cache'][prev_fetch],
-                } if exists(prev_fetch) and exists(cached_kvs) else None
+                prev_states = { # cache is [L, KV, B, H, N, D] ! (L = layers, KV = key/value, B = batch, H = heads, N = num tokens, D = dim)
+                    'cache_lengths': cached_kvs['cache_lengths'][target_positions],
+                    'cache': cached_kvs['cache'][:, :, target_positions] # only keep states from the "gold" hypothesis
+                } if exists(cached_kvs) else None
+
 
         total_sub_batch_loss = total_sub_batch_loss / len(batch) # average over sub-batches
         losses.append(total_sub_batch_loss.item())
@@ -287,7 +309,7 @@ def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, sc
         if exists(schedular):
             schedular.step()
         if exists(ema):
-            ema.update(model)
+            ema.update()
         cur_lr = schedular.get_last_lr()[0] if exists(schedular) else optim.param_groups[0]['lr']
 
         if args.wandb:
@@ -296,11 +318,13 @@ def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, sc
     loss_end = sum(losses) / len(losses)
     if args.wandb:
         wandb.log({'train_loss_end': loss_end, 'epoch': epoch})
+
     torch.cuda.empty_cache()
     return loss_end
 
 
 def main(args):
+
     device, config = torch.device(args.device), load_config(args.config)
     tokenizer_path = os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
     tokenizer = load_tokenizer(model_path=tokenizer_path)
@@ -317,6 +341,8 @@ def main(args):
     model.to(device)
 
     optim, schedular = optimizer(model, args)
+    save_schedular_data(args)
+
     total_params = get_parameters(model=model, verbose=True)
     
     val_samples = create_dataset_samples(
@@ -342,7 +368,7 @@ def main(args):
         'shuffle': True,
     }
 
-    ema = ExponentialMovingAverage(model.parameters(), decay=0.9999)
+    ema = ExponentialMovingAverage(model.parameters(), decay=0.9999) 
     scaler = GradScaler() if args.mixed_precision else None
 
     run_config = {'run_args': args.__dict__, 'model_config': config, 'total_params': total_params}
@@ -360,7 +386,8 @@ def main(args):
         epoch = epoch_ + epoch_prev
         #train_dataloader.sampler.set_epoch(epoch)
 
-        loss = train_one_epoch(args, model, optim, schedular, # create new train samples each epoch so the negatives change
+        # args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None
+        loss = train_one_epoch(args, epoch, model, optim, schedular, # create new train samples each epoch so the negatives change
             train_dataloader=Sampler(create_dataset_samples(**train_sample_args), batch_size=args.batch_size, tokenizer=tokenizer, shuffle=True),
             device=device, 
             scaler=scaler, 
@@ -370,7 +397,7 @@ def main(args):
         try: # don't want this to crash if I accidentally delete the schedular config file
             schedular = update_schedular(args, optim, schedular) # allows changing of min n max learning rate during training
         except Exception as e:
-            if os.path.exists(args.schedular_config_file) == False:
+            if os.path.exists(args.schedular_data) == False:
                 print('Schedular config file not found, creating new one')
                 save_schedular_data(args)
             else:
@@ -414,10 +441,16 @@ def main(args):
             })
             saved_checkpoints.sort(key=lambda x: x['vloss'])
             to_remove = saved_checkpoints.pop()
-            os.remove(to_remove['path'])
+            os.remove(to_remove['path']) 
             
+# TODO:
+# - ADD SCHEDULER SAVE B4 TRAINING LOOP
+# - FIX LOSS SCALING :P (have alook at block-rec conformer) AND LOSS IN VALIDATION LOOP FIXIXIXI
+# - CONDENSE INDEXING - SEE LINE 214
+# - MOVE ALL SUB-BATCHES TO GPU AT ONCE
+# - PRE PREPARE ALL BATCHES RATHER THAN DOING IT ON THE FLY WITH A GENERATOR! (this is a major slowdown ))):)
 
-if __name__ == '__main__': # ADD SCHEDULER SAVE B4 TRAINING LOOP
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--train_hyp', type=str, required=True)
     parser.add_argument('--dev_hyp', type=str, required=True)

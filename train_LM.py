@@ -265,7 +265,7 @@ def main(args):
         try: # don't want this to crash if I accidentally delete the schedular config file
             schedular = update_schedular(args, optim, schedular) # allows changing of min n max learning rate during training
         except Exception as e:
-            if os.path.exists(args.schedular_config_file) == False:
+            if os.path.exists(args.schedular_data) == False:
                 print('Schedular config file not found, creating new one')
                 save_schedular_data(args)
             else:
@@ -321,7 +321,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', type=str, default='')
     parser.add_argument('--model_config', type=str, default='')
 
-    parser.add_argument('--schedular_data', type=str, default='./schedular_data_ctc.json')
+    parser.add_argument('--schedular_data', type=str, default='./schedular_data_lm.json')
 
     parser.add_argument('--micro_batch_duration', type=int, default=45, help='batch size for non-i.i.d micro batches')
     parser.add_argument('--micro_batch_number', type=int, default=1, help='number of i.i.d micro batches per mini-batch')
