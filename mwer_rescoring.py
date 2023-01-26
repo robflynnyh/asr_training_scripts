@@ -34,8 +34,9 @@ from speachy.utils.helpers import  exists, isfalse, istrue
 from speachy.utils.general.training_loop import optimizer, update_schedular
 from contextlib import nullcontext
 from tqdm import tqdm
-
+import wandb
 from torch.cuda.amp import GradScaler   
+from torch_ema import ExponentialMovingAverage
 
 INTERPOLATE = 0.5
 
@@ -238,7 +239,7 @@ def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, sc
     print('Training epoch')
     for batch in pbar:
         prev_states = None
-
+        total_sub_batch_loss = 0
         with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
             for sub_batch_ in batch:
                 sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True) 
@@ -254,26 +255,42 @@ def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, sc
                 logits, interim_posteriors, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states)
                 loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
                 interim_loss = intermediate_loss(loss_ce, interim_posteriors, targets)
-                ## ending here for today :PPPP
+                loss = interim_loss * INTERPOLATE + loss * (1 - INTERPOLATE) if exists(interim_loss) else loss
+                sb_loss_fraction = sub_batch['utterances'].shape[0] / train_dataloader.batch_size
+                total_sub_batch_loss += loss * sb_loss_fraction
 
-
-                losses.append(loss.item())
                 prev_fetch = sub_batch['prev_fetch']
+                
                 prev_states = {
                     'cache_lengths': cached_kvs['cache_lengths'][prev_fetch],
                     'cache': cached_kvs['cache'][prev_fetch],
-                }
+                } if exists(prev_fetch) and exists(cached_kvs) else None
 
-    
+        total_sub_batch_loss = total_sub_batch_loss / len(batch) # average over sub-batches
+        losses.append(total_sub_batch_loss.item())
+        scaler.scale(total_sub_batch_loss).backward() if exists(scaler) else total_sub_batch_loss.backward()
+        if args.clip_gradients == True:
+            scaler.unscale_(optim) if exists(scaler) else None
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_gradients_value) 
+        scaler.step(optim) if exists(scaler) else optim.step()
+        scaler.update() if exists(scaler) else None
+        optim.zero_grad()
 
-    return  sum(losses) / len(losses)
+        if exists(schedular):
+            schedular.step()
+        if exists(ema):
+            ema.update(model)
+        cur_lr = schedular.get_last_lr()[0] if exists(schedular) else optim.param_groups[0]['lr']
 
-'''    train_hyp = load_pkl(args.train_hyp)
-    dev_hyp = load_pkl(args.dev_hyp)
-    train_data = order_recordings_by_start_time(sort_hypothesis_by_recording(train_hyp))
-    dev_data = order_recordings_by_start_time(sort_hypothesis_by_recording(dev_hyp))
-    train_samples = create_dataset_samples(train_data, num_utterances=args.utts_per_sample, num_negatives=args.negatives, max_gap=args.max_gap, shuffle=True)
-    dev_samples = create_dataset_samples(dev_data, num_utterances=args.utts_per_sample, num_negatives=args.negatives, max_gap=args.max_gap, shuffle=False)'''
+        if args.wandb:
+            wandb.log({'train_loss': total_sub_batch_loss, 'lrate': cur_lr})
+            
+    loss_end = sum(losses) / len(losses)
+    if args.wandb:
+        wandb.log({'train_loss_end': loss_end, 'epoch': epoch})
+    torch.cuda.empty_cache()
+    return loss_end
+
 
 def main(args):
     device = torch.device(args.device)
@@ -294,7 +311,86 @@ def main(args):
 
     optim, schedular = optimizer(model, args)
     total_params = get_parameters(model=model, verbose=True)
+    
+    val_samples = create_dataset_samples(
+        dev_data, 
+        num_utterances = args.utts_per_sample, 
+        num_negatives = args.negatives,
+        max_gap = args.max_allowed_utterance_gap,
+        shuffle = False 
+    )
 
+    validate_one_epoch(
+        model = model, 
+        val_dataloader = Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False),
+        sanity_check = True
+    )
+
+    ema = ExponentialMovingAverage(model.parameters(), decay=0.9999)
+    scaler = GradScaler() if args.mixed_precision else None
+
+    run_config = {'run_args': args.__dict__, 'model_config': config, 'total_params': total_params}
+    wandb_init = {'project':args.project_name, 'config':run_config}
+    if args.wandb:
+        wandb.init(**wandb_init
+        ) if args.wandb_id == '' else wandb.init(id=args.wandb_id, resume='allow', **wandb_init)
+        wandb.watch(model, log='all')
+        print(f'\n\nWandb initialized with id {wandb.run.id}\n\n')
+
+    ## UP TO HERE IS CHECKED
+    results = {}
+    saved_checkpoints = []
+    for epoch_ in range(args.epochs): # todo move epoch loop to model utils as is consistent across model types
+        epoch = epoch_ + epoch_prev
+        #train_dataloader.sampler.set_epoch(epoch)
+
+        loss = train_one_epoch(args, model, optim, schedular, train_dataloader, device, scaler, ema)          
+
+        try: # don't want this to crash if I accidentally delete the schedular config file
+            schedular = update_schedular(args, optim, schedular) # allows changing of min n max learning rate during training
+        except Exception as e:
+            if os.path.exists(args.schedular_config_file) == False:
+                print('Schedular config file not found, creating new one')
+                save_schedular_data(args)
+            else:
+                print(e, '\n') # todo move all this to update_schedular it looks ugly :P
+
+        with ema.average_parameters(): # evaluate using ema of the parameters
+            vloss = validate_one_epoch(model, dev_dataloader, device, sanity_check=False)
+
+        if args.wandb:
+            wandb.log({'val_loss': vloss, 'epoch': epoch})
+
+        print(f'\n\n\n--- Epoch {epoch}, Validation Loss: {vloss} ---\n\n\n')
+        write_to_log(args.log_file, f'{epoch} - {vloss}')
+        results[epoch] = {'loss': loss, 'vloss': vloss}
+    
+        if len(saved_checkpoints) < args.save_top_k:
+            ema.store()
+            ema.copy_to() # save ema of the parameters
+            path = save_checkpoint(args, model, optim, epoch, vloss)
+            ema.restore()
+            draw_text('High Score')
+            saved_checkpoints.append({
+                'path': path,
+                'epoch': epoch,
+                'vloss': vloss
+            })
+        elif vloss < max(saved_checkpoints, key=lambda x: x['vloss'])['vloss']:
+            ema.store()
+            ema.copy_to()
+            path = save_checkpoint(args, model, optim, epoch, vloss)
+            ema.restore()
+            draw_text('High Score')
+            saved_checkpoints.append({
+                'path': path,
+                'epoch': epoch,
+                'vloss': vloss
+            })
+            saved_checkpoints.sort(key=lambda x: x['vloss'])
+            to_remove = saved_checkpoints.pop()
+            os.remove(to_remove['path'])
+            
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
