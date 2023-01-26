@@ -4,6 +4,7 @@ from nemo.collections.asr.models.rnnt_bpe_models import EncDecRNNTBPEModel
 from nemo.collections.asr.models.scctc_bpe_models import EncDecSCCTCModelBPE
 import os
 import numpy as np
+from nemo.collections import nlp as nemo_nlp
 from omegaconf.omegaconf import OmegaConf
 import json
 

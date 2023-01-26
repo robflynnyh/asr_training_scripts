@@ -195,7 +195,8 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
     print('Evaluation epoch')
     for batch in pbar:
         prev_states = None
-        for sub_batch_ in batch:
+        for ix, sub_batch_ in enumerate(batch):
+            print(f'sub_batch {ix} / {len(batch)}')
             sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True) 
             tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
             token_lens += 1 # add 1 for bos
@@ -211,6 +212,13 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
 
             losses.append(loss.item())
             prev_fetch = sub_batch['prev_fetch']
+            print(prev_fetch, cached_kvs['cache'].shape)
+            print(tokens.shape)
+            print(sub_batch['sb_lengths'])
+            sb_lengths = sub_batch['sb_lengths']
+            target_positions =  sb_lengths.cumsum(dim=0) - sb_lengths # get the first position of each sub-batch
+
+
             prev_states = {
                 'cache_lengths': cached_kvs['cache_lengths'][prev_fetch],
                 'cache': cached_kvs['cache'][prev_fetch],
@@ -293,14 +301,13 @@ def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, sc
 
 
 def main(args):
-    device = torch.device(args.device)
-    config = load_config(args.config)
+    device, config = torch.device(args.device), load_config(args.config)
     tokenizer_path = os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
     tokenizer = load_tokenizer(model_path=tokenizer_path)
     model = autoload(config=config, tokenizer=tokenizer)
 
-    train_data = order_recordings_by_start_time(sort_hypothesis_by_recording(load_pkl(args.train_hyp)))
-    dev_data = order_recordings_by_start_time(sort_hypothesis_by_recording(load_pkl(args.dev_hyp)))
+    get_data = lambda hyp: order_recordings_by_start_time(sort_hypothesis_by_recording(load_pkl(hyp)))
+    train_data, dev_data = get_data(args.train_hyp), get_data(args.dev_hyp)
 
     epoch_prev = 0
     if args.checkpoint != '':
@@ -313,7 +320,7 @@ def main(args):
     total_params = get_parameters(model=model, verbose=True)
     
     val_samples = create_dataset_samples(
-        dev_data, 
+        dev_data,
         num_utterances = args.utts_per_sample, 
         num_negatives = args.negatives,
         max_gap = args.max_allowed_utterance_gap,
@@ -321,10 +328,19 @@ def main(args):
     )
 
     validate_one_epoch(
-        model = model, 
+        model = model,
         val_dataloader = Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False),
+        device = device,
         sanity_check = True
     )
+
+    train_sample_args = {
+        'recordings': train_data,
+        'num_utterances': args.utts_per_sample,
+        'num_negatives': args.negatives,
+        'max_gap': args.max_allowed_utterance_gap,
+        'shuffle': True,
+    }
 
     ema = ExponentialMovingAverage(model.parameters(), decay=0.9999)
     scaler = GradScaler() if args.mixed_precision else None
@@ -344,7 +360,12 @@ def main(args):
         epoch = epoch_ + epoch_prev
         #train_dataloader.sampler.set_epoch(epoch)
 
-        loss = train_one_epoch(args, model, optim, schedular, train_dataloader, device, scaler, ema)          
+        loss = train_one_epoch(args, model, optim, schedular, # create new train samples each epoch so the negatives change
+            train_dataloader=Sampler(create_dataset_samples(**train_sample_args), batch_size=args.batch_size, tokenizer=tokenizer, shuffle=True),
+            device=device, 
+            scaler=scaler, 
+            ema=ema
+        )          
 
         try: # don't want this to crash if I accidentally delete the schedular config file
             schedular = update_schedular(args, optim, schedular) # allows changing of min n max learning rate during training
@@ -356,13 +377,17 @@ def main(args):
                 print(e, '\n') # todo move all this to update_schedular it looks ugly :P
 
         with ema.average_parameters(): # evaluate using ema of the parameters
-            vloss = validate_one_epoch(model, dev_dataloader, device, sanity_check=False)
+            vloss = validate_one_epoch(
+                model, 
+                Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False), 
+                device, 
+                sanity_check=False
+            )
 
         if args.wandb:
             wandb.log({'val_loss': vloss, 'epoch': epoch})
 
         print(f'\n\n\n--- Epoch {epoch}, Validation Loss: {vloss} ---\n\n\n')
-        write_to_log(args.log_file, f'{epoch} - {vloss}')
         results[epoch] = {'loss': loss, 'vloss': vloss}
     
         if len(saved_checkpoints) < args.save_top_k:
@@ -392,17 +417,18 @@ def main(args):
             os.remove(to_remove['path'])
             
 
-if __name__ == '__main__':
+if __name__ == '__main__': # ADD SCHEDULER SAVE B4 TRAINING LOOP
     parser = argparse.ArgumentParser()
     parser.add_argument('--train_hyp', type=str, required=True)
     parser.add_argument('--dev_hyp', type=str, required=True)
     parser.add_argument('-utts','--utts_per_sample', type=int, default=5)
     parser.add_argument('-negatives','--negatives', type=int, default=5)
-    parser.add_argument('-batch','--batch_size', type=int, default=5)
+    parser.add_argument('-batch','--batch_size', type=int, default=3)
     parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=10.0, help='max allowed gap between utterances in seconds')
 
-    parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml')
+    parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml', required=True)
     parser.add_argument('--checkpoint', type=str, default='')
+    parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints')
 
     parser.add_argument('--schedular_data', type=str, default='./schedular_data.json')
 
@@ -415,3 +441,16 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     args.device = 'cuda' if torch.cuda.is_available() else 'cpu' if args.device == 'auto' else args.device 
+
+
+    if args.checkpoint != '':
+        args.checkpoint = os.path.join(args.checkpoint_dir, args.checkpoint)
+
+    if os.path.exists(args.checkpoint_dir) == False:
+        os.mkdir(args.checkpoint_dir)
+
+    if os.path.exists(args.schedular_data) == True:
+        print(f'A schedular data with the name {args.schedular_data} already exists, please delete it if you want to start a new run')
+        exit()
+
+    main(args=args)

@@ -8,9 +8,8 @@ from tqdm import tqdm
 import torch
 from collections import OrderedDict
 import argparse
+import pickle as pkl
 
-from omegaconf.omegaconf import OmegaConf
-from nemo.collections import nlp as nemo_nlp
 
 
 
