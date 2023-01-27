@@ -10,12 +10,13 @@ from speachy.utils.helpers import (
     isfalse
 )
 
-def loss_ce(logits, labels, ignore_index=-100, label_smoothing=0.0):
+def loss_ce(logits, labels, ignore_index=-100, label_smoothing=0.0, reduction='mean'):
     return torch.nn.functional.cross_entropy(
             rearrange(logits, 'b n c -> b c n'), 
             labels, 
             ignore_index = ignore_index,
-            label_smoothing = label_smoothing
+            label_smoothing = label_smoothing,
+            reduction = reduction
         )
 
 

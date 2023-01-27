@@ -145,6 +145,9 @@ class Sampler(object):
         for i in range(0, len(self.samples), self.batch_size):
             yield get_sub_batches([self.samples[i] for i in self.sample_indices[i:i+self.batch_size]], self.tokenizer)
 
+    def __list__(self):
+        return list(self.generator)
+
     def __iter__(self):
         return self
 
@@ -189,14 +192,25 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
 
     return  sum(losses) / len(losses)
 
+'''
+                    sb_idxs = torch.arange(sb_lengths.size(0))
+                    sb_idxs = torch.cat([sb_idxs[ix].repeat(sb_lengths[ix]) for ix in range(sb_lengths.size(0))]).to(device)
+                    prev_fetch = prev_fetch[sb_idxs]
+                    prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
+                    prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
+'''
+
 @torch.no_grad()
 def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
     model.eval()
+    val_dataloader = list(val_dataloader)
     pbar = tqdm(val_dataloader, total=len(val_dataloader))
     losses = []
     print('Evaluation epoch')
     for batch in pbar:
         prev_states = None
+        total_sb_losses = []
+        total_lengths = 0
         for ix, sub_batch_ in enumerate(batch):
             sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True)
             #print(f'sub_batch {ix+1} / {len(batch)}')
@@ -205,25 +219,25 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
             tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
      
             if exists(prev_states) and exists(prev_fetch): # prev fetch is a list of indices that are present in the current sub-batch 
-                prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
-                prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
                 sb_idxs = torch.arange(sb_lengths.size(0))
                 sb_idxs = torch.cat([sb_idxs[ix].repeat(sb_lengths[ix]) for ix in range(sb_lengths.size(0))]).to(device)
-                prev_states['cache'] = prev_states['cache'][:,:,sb_idxs] # PLEASE CONDENSE THIS WITH THE INDEXING ABOVE ROBERT PLEASE PLEASE PLEASE !!!!! GRRRRR
-                prev_states['cache_lengths'] = prev_states['cache_lengths'][sb_idxs]
+                prev_fetch = prev_fetch[sb_idxs]
+                prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
+                prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
             
             token_lens += 1 # add 1 for bos
             tokens = add_bos(tokens, bos_token_id=0)
             targets = tokens.clone()
             targets[:, :-1] = tokens[:, 1:] # shift 
-            targets = add_eos(targets, eos_id=0, token_lens=token_lens)
+            targets = add_eos(targets, eos_id=-100, token_lens=token_lens)
             mask = token_lens_to_mask(token_lens)
             targets = mark_padding(targets, mask, pad_id=-100)
 
             logits, _, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states)
             loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
 
-            losses.append(loss.item())
+            total_lengths += token_lens.sum().item()
+            total_sb_losses.append(loss.item() * token_lens.sum().item())
             
             target_positions = sb_lengths.cumsum(dim=0) - sb_lengths # get the first position of each sub-batch
             
@@ -232,22 +246,42 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
                 'cache': cached_kvs['cache'][:, :, target_positions] # only keep states from the "gold" hypothesis
             } if exists(cached_kvs) else None
 
+        losses.append(sum(total_sb_losses) / total_lengths)
+  
         if sanity_check:
             return True
 
+    torch.cuda.empty_cache()
     return  sum(losses) / len(losses)
 
 
-def intermediate_loss(loss_fn, interim_logits, targets):
+def mwer_loss_weighting(loss, normed_scores, B, N, token_lens):
+    '''
+    loss: [B, N]
+    normed_scores: [B, N] # scores based on WER
+    B: batch size, N: sequence length
+    token_lens: [B] number of tokens in each batch
+    '''
+    return ((loss.view(B, N) * normed_scores[:,None]).sum() / token_lens.sum()) 
+
+def intermediate_loss(loss_fn, interim_logits, targets, normed_scores, token_lens):
     if not exists(interim_logits):
         return None
     interims = torch.empty(interim_logits.shape[0], device=interim_logits.device)
     for i in range(interim_logits.shape[0]):
-        interims[i] = loss_fn(interim_logits[i], targets)
+        interims[i] = mwer_loss_weighting(
+            loss = loss_fn(interim_logits[i], targets, reduction='none'),
+            normed_scores = normed_scores,
+            B = interim_logits.shape[1], N = interim_logits.shape[2],
+            token_lens = token_lens
+        )
     return torch.mean(interims)
+
+
 
 def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None):
     model.train()
+    train_dataloader = list(train_dataloader)
     pbar = tqdm(train_dataloader, total=len(train_dataloader))
     losses = []
     loss_iterim = []
@@ -256,47 +290,60 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
     for batch in pbar:
         prev_states = None
         total_sub_batch_loss = 0
+        total_sub_batch_lengths = 0
         with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
             for ix, sub_batch_ in enumerate(batch):
                 #print(f'sub_batch {ix+1} / {len(batch)}')
                 sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True) 
-                
+
                 tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
-                prev_fetch, sb_lengths = sub_batch['prev_fetch'], sub_batch['sb_lengths']
+                prev_fetch, sb_lengths, sb_scores = sub_batch['prev_fetch'], sub_batch['sb_lengths'], -sub_batch['scores'] # scores are negative for the softmax
+                sb_starts = sb_lengths.cumsum(dim=0) - sb_lengths 
+                sb_ends = sb_starts + sb_lengths
+                smaxed_scores = torch.cat([sb_scores[sb_starts[ix]:sb_ends[ix]].softmax(dim=0) * sb_lengths[ix] for ix in range(sb_lengths.size(0))]).to(device)
+         
+
 
                 if exists(prev_states) and exists(prev_fetch): # prev fetch is a list of indices that are present in the current sub-batch 
-                    prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
-                    prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
                     sb_idxs = torch.arange(sb_lengths.size(0))
                     sb_idxs = torch.cat([sb_idxs[ix].repeat(sb_lengths[ix]) for ix in range(sb_lengths.size(0))]).to(device)
-                    prev_states['cache'] = prev_states['cache'][:,:,sb_idxs] # PLEASE CONDENSE THIS WITH THE INDEXING ABOVE ROBERT PLEASE PLEASE PLEASE !!!!! GRRRRR
-                    prev_states['cache_lengths'] = prev_states['cache_lengths'][sb_idxs] 
-                    #print('prev_states', prev_states['cache'].shape)
+                    prev_fetch = prev_fetch[sb_idxs]
+                    prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
+                    prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
+        
 
                 token_lens += 1 # add 1 for bos
                 tokens = add_bos(tokens, bos_token_id=0)
                 targets = tokens.clone()
                 targets[:, :-1] = tokens[:, 1:] # shift 
-                targets = add_eos(targets, eos_id=0, token_lens=token_lens)
+                targets = add_eos(targets, eos_id=-100, token_lens=token_lens)
                 mask = token_lens_to_mask(token_lens)
                 targets = mark_padding(targets, mask, pad_id=-100)
 
                 logits, interim_posteriors, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states)
-                loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
-                interim_loss = intermediate_loss(loss_ce, interim_posteriors, targets)
-                loss = interim_loss * INTERPOLATE + loss * (1 - INTERPOLATE) if exists(interim_loss) else loss
-                #sb_loss_fraction = sub_batch['utterances'].shape[0] / (train_dataloader.batch_size * args.utts_per_sample)
-                total_sub_batch_loss += loss #* sb_loss_fraction
-  
-                target_positions = sb_lengths.cumsum(dim=0) - sb_lengths # get the first position of each sub-batch
                 
+                loss = mwer_loss_weighting(
+                    loss = loss_ce(logits=logits, labels=targets, ignore_index=-100, reduction='none'),
+                    normed_scores = smaxed_scores,
+                    B = logits.size(0), N = logits.size(1),
+                    token_lens=token_lens
+                )
+                
+                interim_loss = intermediate_loss(loss_ce, interim_posteriors, targets, normed_scores=smaxed_scores, token_lens=token_lens)
+                loss = interim_loss * INTERPOLATE + loss * (1 - INTERPOLATE) if exists(interim_loss) else loss
+                total_sub_batch_lengths += token_lens.sum()
+                total_sub_batch_loss += loss * token_lens.sum() 
+  
+                
+                target_positions = sb_starts
                 prev_states = { # cache is [L, KV, B, H, N, D] ! (L = layers, KV = key/value, B = batch, H = heads, N = num tokens, D = dim)
                     'cache_lengths': cached_kvs['cache_lengths'][target_positions],
                     'cache': cached_kvs['cache'][:, :, target_positions] # only keep states from the "gold" hypothesis
                 } if exists(cached_kvs) else None
 
 
-        total_sub_batch_loss = total_sub_batch_loss / len(batch) # average over sub-batches
+        total_sub_batch_loss = total_sub_batch_loss / total_sub_batch_lengths
+        total_sub_batch_lengths = 0
         losses.append(total_sub_batch_loss.item())
         scaler.scale(total_sub_batch_loss).backward() if exists(scaler) else total_sub_batch_loss.backward()
         if args.clip_gradients == True:
@@ -348,7 +395,7 @@ def main(args):
     val_samples = create_dataset_samples(
         dev_data,
         num_utterances = args.utts_per_sample, 
-        num_negatives = args.negatives,
+        num_negatives = 0,
         max_gap = args.max_allowed_utterance_gap,
         shuffle = False 
     )
@@ -444,11 +491,7 @@ def main(args):
             os.remove(to_remove['path']) 
             
 # TODO:
-# - ADD SCHEDULER SAVE B4 TRAINING LOOP
-# - FIX LOSS SCALING :P (have alook at block-rec conformer) AND LOSS IN VALIDATION LOOP FIXIXIXI
 # - CONDENSE INDEXING - SEE LINE 214
-# - MOVE ALL SUB-BATCHES TO GPU AT ONCE
-# - PRE PREPARE ALL BATCHES RATHER THAN DOING IT ON THE FLY WITH A GENERATOR! (this is a major slowdown ))):)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
