@@ -6,13 +6,13 @@ python mwer_rescoring.py --checkpoint 'pg_19_pretrained_c_62_id_87.pt' \
     --checkpoint_dir './checkpoints/1kw_pg19checkpoints_nths/' \
     --config './experiment_configs/lm/decoder_pg19.yaml' \
     --min_lr 1e-5 \
-    --max_lr 4.5e-4 \
+    --max_lr 4.0e-4 \
     --step_size 900 \
     --clip_gradients \
     --clip_gradients_value 15 \
-    --batch_size 8 \
+    --batch_size 5 \
     --utts_per_sample 25 \
-    --negatives 5 \
+    --negatives 4 \
     --max_allowed_utterance_gap 10.0 \
     --wandb_id '' \
     --save_top_k 1 \

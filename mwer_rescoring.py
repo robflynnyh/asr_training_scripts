@@ -137,7 +137,6 @@ class Sampler(object):
         self.shuffle = shuffle
         self.sample_indices = np.arange(len(self.samples))
         np.random.shuffle(self.sample_indices) if self.shuffle else None
-        print(f'shfl {shuffle}, {self.sample_indices[0]} (debug)')
 
         self.generator = self.__generator__() 
 
@@ -255,25 +254,37 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
     return  sum(losses) / len(losses)
 
 
-def mwer_loss_weighting(loss, normed_scores, B, N, token_lens):
+def mwer_loss_weighting(loss, wer_scores, B, N, token_lens, sbatch_lens):
     '''
     loss: [B, N]
-    normed_scores: [B, N] # scores based on WER
+    wer_scores: [B, N] # scores based on WER
     B: batch size, N: sequence length
     token_lens: [B] number of tokens in each batch
     '''
-    return ((loss.view(B, N) * normed_scores[:,None]).sum() / token_lens.sum()) 
+    seq_scores = -loss.view(B,N).sum(-1)
+    sb_starts = sbatch_lens.cumsum(dim=0) - sbatch_lens 
+    sb_ends = sb_starts + sbatch_lens
+    seq_scores = torch.cat([seq_scores[sb_starts[ix]:sb_ends[ix]].softmax(-1)  for ix in range(sbatch_lens.size(0))]).to(seq_scores.device)
+    seq_scores = (seq_scores * wer_scores).sum() / B
+    target_ce = (loss[sb_starts].sum() / token_lens[sb_starts].sum()) * 0.01 # https://arxiv.org/pdf/1712.01818.pdf
 
-def intermediate_loss(loss_fn, interim_logits, targets, normed_scores, token_lens):
+    return seq_scores + target_ce
+    
+
+
+    return ((loss.view(B, N) * wer_scores[:,None]).sum() / token_lens.sum()) 
+
+def intermediate_loss(loss_fn, interim_logits, targets, wer_scores, token_lens, sbatch_lens):
     if not exists(interim_logits):
         return None
     interims = torch.empty(interim_logits.shape[0], device=interim_logits.device)
     for i in range(interim_logits.shape[0]):
         interims[i] = mwer_loss_weighting(
             loss = loss_fn(interim_logits[i], targets, reduction='none'),
-            normed_scores = normed_scores,
+            wer_scores = wer_scores,
             B = interim_logits.shape[1], N = interim_logits.shape[2],
-            token_lens = token_lens
+            token_lens = token_lens,
+            sbatch_lens = sbatch_lens
         )
     return torch.mean(interims)
 
@@ -300,7 +311,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 prev_fetch, sb_lengths, sb_scores = sub_batch['prev_fetch'], sub_batch['sb_lengths'], -sub_batch['scores'] # scores are negative for the softmax
                 sb_starts = sb_lengths.cumsum(dim=0) - sb_lengths 
                 sb_ends = sb_starts + sb_lengths
-                smaxed_scores = torch.cat([sb_scores[sb_starts[ix]:sb_ends[ix]].softmax(dim=0) * sb_lengths[ix] for ix in range(sb_lengths.size(0))]).to(device)
+                wer_scores = torch.cat([sb_scores[sb_starts[ix]:sb_ends[ix]] - sb_scores[sb_starts[ix]:sb_ends[ix]].mean() for ix in range(sb_lengths.size(0))]).to(device)
          
 
 
@@ -324,12 +335,13 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 
                 loss = mwer_loss_weighting(
                     loss = loss_ce(logits=logits, labels=targets, ignore_index=-100, reduction='none'),
-                    normed_scores = smaxed_scores,
+                    wer_scores = wer_scores,
                     B = logits.size(0), N = logits.size(1),
-                    token_lens=token_lens
+                    token_lens=token_lens,
+                    sbatch_lens=sb_lengths
                 )
                 
-                interim_loss = intermediate_loss(loss_ce, interim_posteriors, targets, normed_scores=smaxed_scores, token_lens=token_lens)
+                interim_loss = intermediate_loss(loss_ce, interim_posteriors, targets, wer_scores=wer_scores, token_lens=token_lens, sbatch_lens=sb_lengths)
                 loss = interim_loss * INTERPOLATE + loss * (1 - INTERPOLATE) if exists(interim_loss) else loss
                 total_sub_batch_lengths += token_lens.sum()
                 total_sub_batch_loss += loss * token_lens.sum() 
