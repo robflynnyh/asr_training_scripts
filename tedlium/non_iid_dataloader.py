@@ -182,6 +182,8 @@ def get_meta_data(cuts:CutSet):
     metadata = []
     for cut in cuts:
         cutdata = {}
+        print(len(cut.supervisions))
+        print(cut.supervisions[-1].custom)  #############
         supervisions = cut.supervisions[0]
         cutdata['unique_id'] = cut.id
         cutdata['timings'] = supervisions.custom

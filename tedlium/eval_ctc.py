@@ -82,6 +82,7 @@ def evaluate(args, model, corpus, decoder):
         speaker_gap=args.speaker_gap,
         single_speaker_with_gaps=args.single_speaker_with_gaps,
         max_allowed_utterance_gap=args.max_allowed_utterance_gap,
+        return_meta_data=True
     )
 
     pbar = tqdm(dataloader, total=len(dataloader))
@@ -95,6 +96,7 @@ def evaluate(args, model, corpus, decoder):
         targets = [el[0] for el in batch['text']]
         targets = [el.replace(" '", "'") for el in targets] # change this in training so that it's not needed here
 
+        print(batch['metadata'])
         audios = noise_audio(audios, args.noise_level)
         
         model_out = model.forward(
