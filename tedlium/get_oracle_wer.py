@@ -30,6 +30,9 @@ def get_oracle_wer(hypothesis, max_depth=-1):
                 cur = utt['beams'][0][idx]
                 hyptext = cur['text']
                 hypwer = word_error_rate([hyptext], [target])
+                #print(hypwer)
+                #print(hyptext, ':hp:', target)
+                #exit()
                 if best_idx is None or hypwer < best_score:
                     best_idx = idx
                     best_score = hypwer

@@ -96,7 +96,6 @@ def evaluate(args, model, corpus, decoder):
         targets = [el[0] for el in batch['text']]
         targets = [el.replace(" '", "'") for el in targets] # change this in training so that it's not needed here
 
-        print(batch['metadata'])
         audios = noise_audio(audios, args.noise_level)
         
         model_out = model.forward(

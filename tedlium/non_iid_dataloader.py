@@ -182,14 +182,15 @@ def get_meta_data(cuts:CutSet):
     metadata = []
     for cut in cuts:
         cutdata = {}
-        print(len(cut.supervisions))
-        print(cut.supervisions[-1].custom)  #############
-        supervisions = cut.supervisions[0]
+        #print(len(cut.supervisions))
+        #print(cut.supervisions[-1])  #############
+        supervisions = cut.supervisions
+        cutdata['individual_utterance_text'] = [el.text for el in supervisions]
         cutdata['unique_id'] = cut.id
-        cutdata['timings'] = supervisions.custom
-        cutdata['recording_id'] = supervisions.recording_id
-        cutdata['utterance_id'] = supervisions.id
-        cutdata['speaker'] = supervisions.speaker
+        cutdata['timings'] = [el.custom for el in supervisions]
+        cutdata['recording_id'] = [el.recording_id for el in supervisions]
+        cutdata['utterance_id'] = [el.id for el in supervisions]
+        cutdata['speaker'] = [el.speaker for el in supervisions]
         metadata.append(cutdata)
     return metadata
 
