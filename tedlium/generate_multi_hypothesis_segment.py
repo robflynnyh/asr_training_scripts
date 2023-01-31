@@ -17,6 +17,7 @@ from omegaconf.omegaconf import OmegaConf
 from model_utils import load_checkpoint, load_nemo_checkpoint, load_model, load_sc_model, write_to_log
 from speachy.asr.decoding.ngram import decode_beams_lm
 import non_iid_dataloader
+from speachy.asr.misc import segment
 
 import pickle as pkl
 
@@ -69,6 +70,8 @@ def evaluate(args, model, corpus, decoder):
     for batch_num, batch in enumerate(pbar):
 
         audios = batch['audio'].reshape(1, -1).to(device)
+
+        _, timings = segment.process(audios.cpu().numpy(), sr=16000, vad_mode=2, min_len_seconds=2.5, padding=250, frame_size=30)
       
         speaker_ids = ["_".join(el[0]) for el in batch['speakers']]
         
@@ -99,6 +102,7 @@ def evaluate(args, model, corpus, decoder):
         meta_data['speaker'] = list(set(meta_data['speaker']))
         meta_data['recording_id'] = meta_data['recording_id'][0]
 
+        print(timings)
         decoded_beams = decode_beams_lm(
             logits_list = log_probs, 
             decoder = decoder, 

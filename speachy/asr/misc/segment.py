@@ -117,14 +117,24 @@ def vad_collector(sample_rate, frame_duration_ms,
         yield b''.join([f.bytes for ix, f in voiced_frames]), [ix for ix, f in voiced_frames]
 
 
-def process(audio_path, vad_mode:int, min_len_seconds:int=25, padding:int=250, frame_size:int=30) -> list:
+def float_to_pcm16(audio):
+    ints = (audio * 32767).astype(np.int16)
+    little_endian = ints.astype('<u2')
+    buf = little_endian.tostring()
+    return buf
+
+def load_audio(audio_path, sr=16000):
+    return librosa.load(audio_path, sr=sr)[0]
+
+
+def process(audio, sr, vad_mode:int, min_len_seconds:int=25, padding:int=250, frame_size:int=30) -> list:
     '''
     audio_path: str = path to wav file \n
     padding: int = time in ms to pad chunks \n
     vad_mode: int {0-3} = aggressiveness at filtering out non-speech 3 = most aggressive \n
     frame_size: int {10,20,30} = frame size in ms to process audio
     '''
-    audio, sr = read_wave(audio_path)
+    audio = float_to_pcm16(audio) # convert to pcm16
     vad = webrtcvad.Vad(vad_mode)
     frames = frame_generator(frame_size, audio, sr)
     frames = list(frames)

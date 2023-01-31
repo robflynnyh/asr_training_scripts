@@ -173,11 +173,14 @@ def get_next_target(args, next_utt, prev_end, tokenizer):
     '''gets first word of next utterance if it is within max_utt_gap of previous utterance
     '''
     utt = next_utt   
-    segment_start, segment_end = utt['meta_data']['timings'].values()
+    segment_start, _ = utt['meta_data']['timings'].values()
     if prev_end - segment_start > args.max_utt_gap:
         return None
     top_beam_text = utt['beams'][0][0]['text']
-    top_beam_first_word = top_beam_text.split()[0]
+    top_beam_first_word = top_beam_text.split()
+    if len(top_beam_first_word) == 0:
+        return None
+    top_beam_first_word = top_beam_first_word[0]
     return tokenizer.text_to_ids(top_beam_first_word)[0]
     
 

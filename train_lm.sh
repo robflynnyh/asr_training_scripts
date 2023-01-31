@@ -4,8 +4,8 @@ python train_LM.py --checkpoint 'pg_19_pretrained_c_62_id_87.pt' \
     --checkpoint_dir './checkpoints/1kw_pg19checkpoints_nths/' \
     --model_config './experiment_configs/lm/decoder_pg19.yaml' \
     --min_lr 1e-6 \
-    --max_lr 3.5e-4 \
-    --step_size 900 \
+    --max_lr 2.0e-4 \
+    --step_size 500 \
     --accumulate_gradients 4 \
     --clip_gradients \
     --clip_gradients_value 15 \
@@ -15,7 +15,6 @@ python train_LM.py --checkpoint 'pg_19_pretrained_c_62_id_87.pt' \
     --wandb_id '' \
     --save_top_k 1 \
     --schedular_data './pg191kwft.json' \
-    --ema_decay 1.0 \
     -no_eos \
     --project_name 'FINETUNE-PG19-INTERSPEECH' \
     --label_smoothing 0.0 \
