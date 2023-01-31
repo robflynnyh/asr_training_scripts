@@ -38,15 +38,16 @@ from torch_ema import ExponentialMovingAverage
 from torch.cuda.amp import GradScaler   
 
 
-
 INTERPOLATE = 0.5
 
+
 @torch.no_grad()
-def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
+def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
     model.eval()
     pbar = tqdm(val_dataloader, total=len(val_dataloader))
     wers = []
     losses = []
+    eos_id = 0 if not args.no_eos else -100 # set eos_id to the ignore_index if no_eos is True
     print('Evaluation epoch')
     for batch in pbar:
         tokens, token_lens = batch_to_device(batch, device)
@@ -55,7 +56,7 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
         tokens = add_bos(tokens, bos_token_id=0)
         targets = tokens.clone()
         targets[:, :-1] = tokens[:, 1:]
-        targets = add_eos(targets, eos_id=0, token_lens=token_lens)
+        targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
         
         mask = token_lens_to_mask(token_lens)
         targets = mark_padding(targets, mask, pad_id=-100)
@@ -96,6 +97,7 @@ def train_one_epoch(args, model, optim, schedular, train_dataloader, device, sca
             label_smoothing=args.label_smoothing
         )
     #torch.autograd.set_detect_anomaly(True)
+    eos_id = 0 if not args.no_eos else -100 # set eos_id to the ignore_index if no_eos is True
 
     for i, batch in enumerate(pbar):
         tokens, token_lens = batch_to_device(batch, device)
@@ -105,7 +107,7 @@ def train_one_epoch(args, model, optim, schedular, train_dataloader, device, sca
         tokens = add_bos(tokens, bos_token_id=0)
         targets = tokens.clone()
         targets[:, :-1] = tokens[:, 1:] # shift right
-        targets = add_eos(targets, eos_id=0, token_lens=token_lens) # add <eos> to the end of each sequence
+        targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens) # add <eos> to the end of each sequence
 
         with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
             mask = token_lens_to_mask(token_lens) 
@@ -157,6 +159,7 @@ def train_one_epoch(args, model, optim, schedular, train_dataloader, device, sca
 
     return loss_end
     
+
 
 
 def main(args):
@@ -220,14 +223,14 @@ def main(args):
            
 
     if args.run_test == True:
-        lossval = validate_one_epoch(model, test_dataloader, device, sanity_check=False)
+        lossval = validate_one_epoch(args, model, test_dataloader, device, sanity_check=False)
         print(f' Test loss: {lossval}')
         write_to_log(args.log_file, f'Test loss: {lossval} checkpoint: {args.checkpoint}')
         return
     
-    validate_one_epoch(model, dev_dataloader, device, sanity_check=True) # check no crash
+    validate_one_epoch(args, model, dev_dataloader, device, sanity_check=True) # check no crash
 
-    ema = ExponentialMovingAverage(model.parameters(), decay=0.9999) 
+    ema = ExponentialMovingAverage(model.parameters(), decay=args.ema_decay) if args.ema_decay != 1.0 else None
     scaler = GradScaler() if args.mixed_precision else None
 
     if args.wandb:
@@ -253,8 +256,8 @@ def main(args):
             else:
                 print(e, '\n') # todo move all this to update_schedular it looks ugly :P
 
-        with ema.average_parameters(): # evaluate using ema of the parameters
-            vloss = validate_one_epoch(model, dev_dataloader, device, sanity_check=False)
+        with ema.average_parameters() if exists(ema) else nullcontext():
+            vloss = validate_one_epoch(args, model, dev_dataloader, device, sanity_check=False)
 
         if args.wandb:
             wandb.log({'val_loss': vloss, 'epoch': epoch})
@@ -264,10 +267,10 @@ def main(args):
         results[epoch] = {'loss': loss, 'vloss': vloss}
     
         if len(saved_checkpoints) < args.save_top_k:
-            ema.store()
-            ema.copy_to() # save ema of the parameters
+            ema.store() if exists(ema) else None
+            ema.copy_to() if exists(ema) else None # save ema of the parameters
             path = save_checkpoint(args, model, optim, epoch, vloss)
-            ema.restore()
+            ema.restore() if exists(ema) else None
             draw_text('High Score')
             saved_checkpoints.append({
                 'path': path,
@@ -275,10 +278,10 @@ def main(args):
                 'vloss': vloss
             })
         elif vloss < max(saved_checkpoints, key=lambda x: x['vloss'])['vloss']:
-            ema.store()
-            ema.copy_to()
+            ema.store() if exists(ema) else None
+            ema.copy_to() if exists(ema) else None
             path = save_checkpoint(args, model, optim, epoch, vloss)
-            ema.restore()
+            ema.restore() if exists(ema) else None
             draw_text('High Score')
             saved_checkpoints.append({
                 'path': path,
@@ -303,6 +306,8 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', type=str, default='')
     parser.add_argument('--model_config', type=str, default='')
 
+    parser.add_argument('-ema','--ema_decay', type=float, default=0.9999, help='decay rate for exponential moving average of parameters')
+
     parser.add_argument('--schedular_data', type=str, default='./schedular_data_lm.json')
 
     parser.add_argument('--micro_batch_duration', type=int, default=45, help='batch size for non-i.i.d micro batches')
@@ -316,7 +321,9 @@ if __name__ == '__main__':
     parser.add_argument('--label_smoothing', type=float, default=0.0)
 
     parser.add_argument('--project_name', default='deliberation-LM', type=str)
-  
+    parser.add_argument('-no_eos','--no_eos', action='store_true', help='if set, will not add eos token to the end of the utterances https://aclanthology.org/2020.blackboxnlp-1.26.pdf')
+
+    parser.add_argument('-weight_decay','--weight_decay', type=float, default=1e-6, help='weight decay for optimizer')
     parser = add_common_args(parser)
 
     args = parser.parse_args()

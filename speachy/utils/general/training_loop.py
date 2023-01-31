@@ -5,10 +5,11 @@ from speachy.utils.general.model_utils import load_schedular_data
 
 def optimizer(model, args):
     implemented_optimizers = ['adamw','madgrad']
+    weight_decay = 1e-6 if 'weight_decay' not in args else args.weight_decay
     if args.optimizer_type == 'adamw':
-        optimizer = torch.optim.AdamW(model.parameters(), betas=(0.9, 0.98), weight_decay=1e-6, lr=args.min_lr)
+        optimizer = torch.optim.AdamW(model.parameters(), betas=(0.9, 0.98), weight_decay=weight_decay, lr=args.min_lr)
     elif args.optimizer_type == 'madgrad':
-        optimizer = torch_optimizer.MADGRAD(model.parameters(), lr=args.min_lr, momentum=0.9, weight_decay=1e-6, eps=1e-6)
+        optimizer = torch_optimizer.MADGRAD(model.parameters(), lr=args.min_lr, momentum=0.9, weight_decay=weight_decay, eps=1e-6)
     else:
         raise ValueError(f'Unknown optimizer type: {args.optimizer_type}, implemented optimizers: {implemented_optimizers}')
 

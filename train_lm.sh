@@ -15,6 +15,8 @@ python train_LM.py --checkpoint 'pg_19_pretrained_c_62_id_87.pt' \
     --wandb_id '' \
     --save_top_k 1 \
     --schedular_data './pg191kwft.json' \
+    --ema_decay 1.0 \
+    -no_eos \
     --project_name 'FINETUNE-PG19-INTERSPEECH' \
     --label_smoothing 0.0 \
     
