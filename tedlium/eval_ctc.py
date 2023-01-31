@@ -85,6 +85,8 @@ def evaluate(args, model, corpus, decoder):
         return_meta_data=True
     )
 
+    
+
     pbar = tqdm(dataloader, total=len(dataloader))
     for batch_num, batch in enumerate(pbar):
     
@@ -97,7 +99,9 @@ def evaluate(args, model, corpus, decoder):
         targets = [el.replace(" '", "'") for el in targets] # change this in training so that it's not needed here
 
         audios = noise_audio(audios, args.noise_level)
-        
+
+        r_ids = [el[0]['recording_id'] for el in batch['metadata']]
+
         model_out = model.forward(
             input_signal=audios, 
             input_signal_length=audio_lengths,

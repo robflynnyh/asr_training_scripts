@@ -93,30 +93,69 @@ def evaluate(args, model, corpus, decoder):
         #print(meta_data['individual_utterance_text'])
         #print(meta_data['timings'])
         num_samples = len(meta_data['timings'])
-        #if num_samples == 1: # ugly
-        meta_data['timings'] = {'segment_start':meta_data['timings'][0]['segment_start'], 'segment_end':meta_data['timings'][0]['segment_end']}
-        
-        meta_data['speaker'] = list(set(meta_data['speaker']))
-        meta_data['recording_id'] = meta_data['recording_id'][0]
+        if num_samples == 1: # ugly
+            meta_data['timings'] = meta_data['timings'][0]
+            meta_data['speaker'] = meta_data['speaker'][0]
+            meta_data['utterance_id'] = meta_data['utterance_id'][0]
+            meta_data['recording_id'] = meta_data['recording_id'][0]
 
-        decoded_beams = decode_beams_lm(
-            logits_list = log_probs, 
-            decoder = decoder, 
-            beam_width = args.beam_size, 
-            encoded_lengths = encoded_len,
-            token_min_logp = args.token_min_logp,
-            beam_prune_logp = args.beam_prune_logp,
-        )
-        outputs = {
-            'beams': decoded_beams,
-            'meta_data': meta_data,
-            'speaker_ids': speaker_ids,
-            'targets': targets,
-            'batch_num': utt_num,
-        }
-        utt_num += 1
-        hyp_data.append(outputs)
-    
+            decoded_beams = decode_beams_lm(
+                logits_list = log_probs, 
+                decoder = decoder, 
+                beam_width = args.beam_size, 
+                encoded_lengths = encoded_len,
+                token_min_logp = args.token_min_logp,
+                beam_prune_logp = args.beam_prune_logp,
+            )
+            outputs = {
+                'beams': decoded_beams,
+                'meta_data': meta_data,
+                'speaker_ids': speaker_ids,
+                'targets': targets,
+                'batch_num': utt_num,
+            }
+            utt_num += 1
+            hyp_data.append(outputs)
+        else: # uglier
+            total_length_in_seconds = sum([el['segment_end'] - el['segment_start'] for el in meta_data['timings']]) + args.gap * (num_samples - 1)
+            lgp_t = log_probs.shape[1] / total_length_in_seconds # log-probs per second
+            #print(lgp_t, 'log-probs per second', total_length_in_seconds, 'total_length_in_seconds', log_probs.shape, 'log_probs.shape')
+            cur_pos_lgp = 0
+            for ix in range(num_samples):
+                utt_length_s = meta_data['timings'][ix]['segment_end'] - meta_data['timings'][ix]['segment_start']
+                utt_length_s = utt_length_s + args.gap/2 if ix < num_samples - 1 else utt_length_s
+                utt_length_s = utt_length_s + args.gap/2 if ix > 0 else utt_length_s
+                utt_length_lgp = round(utt_length_s * lgp_t) + cur_pos_lgp
+                utt_logits = log_probs[:, cur_pos_lgp:utt_length_lgp]
+                
+                decoded_beams = decode_beams_lm(
+                    logits_list = utt_logits,
+                    decoder = decoder,
+                    beam_width = args.beam_size,
+                    encoded_lengths = torch.tensor([utt_logits.shape[1]], dtype=torch.int32),
+                    token_min_logp = args.token_min_logp,
+                    beam_prune_logp = args.beam_prune_logp,
+                )
+                outputs = {
+                    'beams': decoded_beams,
+                    'meta_data': {
+                        'timings': meta_data['timings'][ix],
+                        'speaker': meta_data['speaker'][ix],
+                        'utterance_id': meta_data['utterance_id'][ix],
+                        'recording_id': meta_data['recording_id'][ix],
+                        'unique_id': meta_data['unique_id']
+                    },
+                    'speaker_ids': speaker_ids,
+                    'targets': [meta_data['individual_utterance_text'][ix]],
+                    'batch_num': utt_num,
+                }
+                hyp_data.append(outputs)
+                utt_num += 1
+                cur_pos_lgp = utt_length_lgp
+                if ix == num_samples - 1:
+                    print(cur_pos_lgp, log_probs.shape[1], 'cur_pos_lgp, log_probs.shape[1] (should be equal')
+                    assert torch.allclose(torch.tensor(cur_pos_lgp), torch.tensor(log_probs.shape[1]), atol=5), f'{cur_pos_lgp} {log_probs.shape[1]}, log-probs not used up - something may be wrong'
+
 
 
 

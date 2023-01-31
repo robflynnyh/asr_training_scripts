@@ -51,6 +51,7 @@ def eval_perplexity(model, tokens, token_lens, return_ppl=True):
     targets[:, :-1] = tokens[:, 1:]
     targets = add_eos(targets, eos_id=0, token_lens=token_lens)
     mask = token_lens_to_mask(token_lens)
+    
     targets = mark_padding(targets, mask, pad_id=-100)
 
     model_args = {'x': tokens, 'mask': mask} if isfalse(callable(getattr(model, 'get_args', False))) \
