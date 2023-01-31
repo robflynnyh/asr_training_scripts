@@ -150,18 +150,6 @@ def rescore(args, recording_hyps, standardise_stats):
                 best_hyp = hyptext
 
         # so messy ):::::::
-        target_txt = utt['targets'][0]
-        top_hyp = utt['beams'][0][0]['text']
-        original_wer = word_error_rate([target_txt], [top_hyp])
-        rescored_wer = word_error_rate([target_txt], [best_hyp])
-        print(f'{target_txt} : {top_hyp} : {best_hyp}') if args.verbose else None
-        print(f'\n\nOriginal WER: {original_wer}, rescored WER: {rescored_wer}\n\n') if args.verbose else None
-        if rescored_wer < original_wer:
-            print(f'{["-"]*10} WER IMPROVEMENT {["-"]*10}\n\n') if args.verbose else None
-        elif rescored_wer == original_wer:
-            print('') if args.verbose else None
-        else:
-            print(f'{["-"]*10} WER DEGRADATION {["-"]*10}\n\n') if args.verbose else None
 
         utt['best_logp'] = best_log_p
         utt['best_hyp'] = best_hyp

@@ -13,7 +13,7 @@ model:
     n_layers: 12
     n_heads: 8
     dim_head: 32
-    dropout: 0.5
+    dropout: 0.0
     temperature: 15.5
     intermediate_loss: false
     kwargs:

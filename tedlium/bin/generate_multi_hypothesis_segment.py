@@ -18,6 +18,7 @@ from model_utils import load_checkpoint, load_nemo_checkpoint, load_model, load_
 from speachy.asr.decoding.ngram import decode_beams_lm
 import non_iid_dataloader
 from speachy.asr.misc import segment
+import math
 
 import pickle as pkl
 
@@ -71,7 +72,7 @@ def evaluate(args, model, corpus, decoder):
 
         audios = batch['audio'].reshape(1, -1).to(device)
 
-        _, timings = segment.process(audios.cpu().numpy(), sr=16000, vad_mode=2, min_len_seconds=2.5, padding=250, frame_size=30)
+        _, timings = segment.process(audios.cpu().numpy(), sr=16000, vad_mode=0, min_len_seconds=2.5, padding=250, frame_size=30)
       
         speaker_ids = ["_".join(el[0]) for el in batch['speakers']]
         
@@ -80,7 +81,7 @@ def evaluate(args, model, corpus, decoder):
         targets = [el[0] for el in batch['text']]
         targets = [el.replace(" '", "'") for el in targets] # change this in training so that it's not needed here but i'll keep it for now
         meta_data = batch['metadata'][0][0]
-        print(targets, meta_data)
+        #print(targets, meta_data)
         model_out = model.forward(
             input_signal=audios, 
             input_signal_length=audio_lengths,
@@ -101,25 +102,50 @@ def evaluate(args, model, corpus, decoder):
         
         meta_data['speaker'] = list(set(meta_data['speaker']))
         meta_data['recording_id'] = meta_data['recording_id'][0]
+        meta_data['utterance_id'] = "_".join(meta_data['utterance_id'])
+        
 
-        print(timings)
-        decoded_beams = decode_beams_lm(
-            logits_list = log_probs, 
-            decoder = decoder, 
-            beam_width = args.beam_size, 
-            encoded_lengths = encoded_len,
-            token_min_logp = args.token_min_logp,
-            beam_prune_logp = args.beam_prune_logp,
-        )
-        outputs = {
-            'beams': decoded_beams,
-            'meta_data': meta_data,
-            'speaker_ids': speaker_ids,
-            'targets': targets,
-            'batch_num': utt_num,
-        }
-        utt_num += 1
-        hyp_data.append(outputs)
+        total_length = meta_data['timings']['segment_end'] - meta_data['timings']['segment_start']
+        time_per_logit = total_length / log_probs.shape[1]
+
+        timings = [{'start':0, 'end': total_length}] if len(timings) == 1 else timings
+        print(len(timings))
+        
+        #print(meta_data)
+        for ix, timing in enumerate(timings):
+            #print(timing)
+            start_l, end_l = math.floor(timing['start'] / time_per_logit), math.ceil(timing['end'] / time_per_logit)
+            #print(start_l, end_l)
+            cur_enc_len = end_l - start_l
+            cur_log_probs = log_probs[:, start_l:end_l, :]
+            abs_start, abs_end = meta_data['timings']['segment_start'] + timing['start'], meta_data['timings']['segment_start'] + timing['end']
+            decoded_beams = decode_beams_lm(
+                logits_list = cur_log_probs,
+                decoder = decoder, 
+                beam_width = args.beam_size, 
+                encoded_lengths = None, # no padding as batch size is 1
+                token_min_logp = args.token_min_logp,
+                beam_prune_logp = args.beam_prune_logp,
+            )
+
+            outputs = {
+                'beams': decoded_beams,
+                'meta_data': {
+                    'recording_id': meta_data['recording_id'],
+                    'individual_utterance_text': meta_data['individual_utterance_text'],
+                    'speaker': meta_data['speaker'],
+                    'timings': {'segment_start': abs_start, 'segment_end': abs_end},
+                    'unique_id': meta_data['unique_id'] + f'.{ix}',
+                    'utterance_id': meta_data['utterance_id'] + f'.{ix}',
+                },
+                'speaker_ids': speaker_ids,
+                'targets': None if ix != len(timings) - 1 else targets, # only supply targets for the last utterance in the subsegment
+                'batch_num': utt_num,
+            }
+            utt_num += 1
+            #print(outputs)
+            hyp_data.append(outputs)
+
     
 
 
