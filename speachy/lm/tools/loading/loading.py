@@ -16,7 +16,9 @@ def load_qknorm_transformer(config:OmegaConf, tokenizer):
         dim_head = config.get('dim_head', 32),
         causal = config.get('causal', True),
         temperature= config.get('temperature', 15.5),
-        dropout= config.get('dropout', 0.1),
+        intermediate_loss = config.get('intermediate_loss', True),
+        self_conditioning = config.get('self_conditioning', False),
+        dropout = config.get('dropout', 0.1),
         **config.get('kwargs', {})
     )
     return transformer
@@ -26,8 +28,8 @@ def autoload(config:OmegaConf, tokenizer):
     assert 'model' in config
     modelconfig = config['model']
     mtype = modelconfig.get('modeltype', 'qknorm')
+    cfg = modelconfig[mtype]
 
     if 'qknorm' in mtype:
-        cfg = modelconfig[mtype]
         return load_qknorm_transformer(cfg, tokenizer)
 

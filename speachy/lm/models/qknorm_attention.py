@@ -374,8 +374,7 @@ class transformer(nn.Module):
                 x, logits = self_condtioning(x)
                 intermediate_logits.append(logits)
 
-        if len(intermediate_logits) > 0: # stack intermediate logits
-            intermediate_logits = torch.stack(intermediate_logits, dim=0) # D x B x N x L
+        intermediate_logits = torch.stack(intermediate_logits, dim=0) if len(intermediate_logits) > 0 else None
 
         cached_kvs = torch.stack(cached_kvs, dim=0) if len(cached_kvs) > 0 else None
         cached_kvs = {'cache_lengths': total_lens, 'cache': cached_kvs} if exists(cached_kvs) else None
@@ -475,7 +474,6 @@ class transformer_lm(nn.Module):
         x, interim_logits, cached_kvs = self.layers(x, length, self_condtioning=self.self_condition_fn(), cache=cache)
         x = self.post_norm(x)
         x = self.to_logits(x)
-
         return  x, interim_logits, cached_kvs
 
 

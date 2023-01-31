@@ -15,6 +15,7 @@ model:
     dim_head: 32
     dropout: 0.5
     temperature: 15.5
+    intermediate_loss: false
     kwargs:
       ff_mult: 4
       tie_embedding: false

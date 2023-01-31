@@ -22,13 +22,12 @@ from speachy.lm.tools.train import (
     token_lens_to_mask,
     add_bos,
     add_eos,
-    mark_padding
+    mark_padding,
 )
 
 from speachy.utils.misc import add_common_args
 
-#from speachy.lm.tools.loading import autoload
-from lm_utils import load_model
+from speachy.lm.tools.loading import autoload
 from speachy.utils.general.training_loop import optimizer, update_schedular
 
 from speachy.utils.helpers import  exists, isfalse, istrue
@@ -61,15 +60,9 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
         mask = token_lens_to_mask(token_lens)
         targets = mark_padding(targets, mask, pad_id=-100)
 
-        model_args = {'x': tokens, 'mask': mask} if isfalse(callable(getattr(model, 'get_args', False))) \
-            else model.get_args(tokens=tokens, mask=mask, lengths=token_lens)
+        logits, _, _ = model(x=tokens, length=token_lens, cache=None)
 
-        model_out = model(**model_args)
-        
-        if callable(getattr(model, 'process_labels', None)):
-            targets = model.process_labels(targets)
-
-        loss = loss_ce(logits=model_out, labels=targets, ignore_index=-100)
+        loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
         losses.append(loss.item())
 
         if sanity_check:
@@ -77,18 +70,14 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
 
     return  sum(losses) / len(losses)
 
-def intermediate_loss(loss_fn, model_out, targets):
-    if isinstance(model_out, dict) == False:
-        return model_out, None
-    out, interim_logits = model_out['out'], model_out['interim_logits']
-    if model_out['interim_logits'] == None or isinstance(model_out['interim_logits'], list):
-        return out, None
-
-    interims = torch.empty(interim_logits.shape[0], device=out.device)
+def intermediate_loss(loss_fn, interim_logits, targets):
+    if interim_logits == None:
+        return None
+    interims = torch.empty(interim_logits.shape[0], device=interim_logits.device)
     for i in range(interim_logits.shape[0]):
         interims[i] = loss_fn(interim_logits[i], targets)
-    
-    return out, torch.mean(interims)
+
+    return torch.mean(interims)
     
 
 def train_one_epoch(args, model, optim, schedular, train_dataloader, device, scaler=None, ema=None):
@@ -122,17 +111,10 @@ def train_one_epoch(args, model, optim, schedular, train_dataloader, device, sca
             mask = token_lens_to_mask(token_lens) 
             targets = mark_padding(targets, mask, pad_id=-100) 
 
-            model_args = {'x': tokens, 'mask': mask} if isfalse(callable(getattr(model, 'get_args', False))) \
-                else model.get_args(tokens=tokens, mask=mask, lengths=token_lens)
-
-            model_out = model.forward(**model_args)
-
-            if callable(getattr(model, 'process_labels', None)):
-                targets = model.process_labels(targets)
-
-            model_out, interim_loss = intermediate_loss(loss_fn, model_out, targets)
-            
-            loss_a = loss_fn(logits=model_out, targets=targets)
+          
+            logits, interim_posteriors, _ = model(x=tokens, length=token_lens, cache=None)
+            interim_loss = intermediate_loss(loss_fn, interim_posteriors, targets)
+            loss_a = loss_fn(logits=logits, targets=targets)
             
             loss_a = loss_a if not exists(interim_loss) else INTERPOLATE * interim_loss + (1 - INTERPOLATE) * loss_a
         
@@ -217,7 +199,7 @@ def main(args):
         test_dataloader = get_dl('test')
 
     args.max_tokens = -1
-    model = load_model(config=config, tokenizer=tokenizer, max_len=torch.inf)
+    model = autoload(config=config, tokenizer=tokenizer)
     model.tokenizer = tokenizer
     
     model.to(device)
