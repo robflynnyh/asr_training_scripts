@@ -77,7 +77,7 @@ model:
 
     # Feed forward module's params
     ff_expansion_factor: 4
-
+    shared_kv: true
     talking_heads: 'none'
     # Multi-headed Attention Module's params
     self_attention_model: cosine # rel_pos or abs_pos
@@ -88,7 +88,7 @@ model:
     untie_biases: true # unties the biases of the TransformerXL layers
     pos_emb_max_len: 5000
     self_condition: true # enables sc-ctc otherwise it is inter ctc
-
+    
     # Convolution module's params
     conv_kernel_size: 31
     conv_norm_type: 'batch_renorm' # batch_norm or layer_norm
