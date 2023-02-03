@@ -33,8 +33,8 @@ def read_text(filename:str) -> List[str]:
     with open(filename, 'r') as f:
         return f.read().split('\n')
 
-def load_envs():
-    env_file = read_text('.env')
+def load_envs(env_path='.env'):
+    env_file = read_text(env_path)
     envs = {}
     for line in env_file:
         if line.startswith('#') or line.strip() == '':
@@ -43,8 +43,8 @@ def load_envs():
         envs[key] = val
     return envs
 
-def request_env(env_name:str):
-    envs = load_envs()
+def request_env(env_name:str, env_path:str='.env'):
+    envs = load_envs(env_path)
     assert env_name in envs, f'{env_name} not found in .env file'
     return envs[env_name]
 
@@ -62,3 +62,6 @@ def write_to_log(log_file, data):
     with open(log_file, 'a') as f:
         f.write(data)
         f.write('\n')
+
+def check_exists(path:str):
+    assert os.path.exists(path), f'{path} does not exist'

@@ -6,8 +6,10 @@ import torch.nn as nn
 from .DEFAULTS import get_model_defaults
 
 
-def load_qknorm_transformer(config:OmegaConf, tokenizer):
+def load_qknorm_transformer(config:OmegaConf, tokenizer, **kwargs):
     from speachy.lm.models.qknorm_attention import transformer_lm
+    config_kwargs = config.get('kwargs', {})
+    config_kwargs.update(kwargs)
     transformer = transformer_lm(
         dim = config.get('d_model', 256),
         vocab_size = tokenizer.vocab_size,
@@ -19,17 +21,17 @@ def load_qknorm_transformer(config:OmegaConf, tokenizer):
         intermediate_loss = config.get('intermediate_loss', True),
         self_conditioning = config.get('self_conditioning', False),
         dropout = config.get('dropout', 0.1),
-        **config.get('kwargs', {})
+        **config_kwargs
     )
     return transformer
 
 
-def autoload(config:OmegaConf, tokenizer):
+def autoload(config:OmegaConf, tokenizer, **kwargs):
     assert 'model' in config
     modelconfig = config['model']
     mtype = modelconfig.get('modeltype', 'qknorm')
     cfg = modelconfig[mtype]
 
     if 'qknorm' in mtype:
-        return load_qknorm_transformer(cfg, tokenizer)
+        return load_qknorm_transformer(cfg, tokenizer, **kwargs)
 

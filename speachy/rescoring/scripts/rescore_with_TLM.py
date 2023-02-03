@@ -26,11 +26,13 @@ import wandb
 
 from speachy.lm.tools.loading import autoload
 from speachy.rescoring.scripts.compute_rescore_wer import main as compute_rescore_wer
+from speachy.utils.misc import write_trn_files, eval_with_sclite
+from speachy.utils.helpers import request_env
+
 
 class argsclass:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
-
 
 
 @torch.no_grad()
@@ -148,7 +150,6 @@ def rescore(args, recording_hyps, standardise_stats):
             if cur['rescore_lp'] > best_log_p:
                 best_log_p = cur['rescore_lp']
                 best_hyp = hyptext
-
         # so messy ):::::::
         target_txt = utt['targets'][0]
         top_hyp = utt['beams'][0][0]['text']
@@ -168,6 +169,24 @@ def rescore(args, recording_hyps, standardise_stats):
         print(f'best logp: {best_log_p}') if args.verbose else None
      
     return recording_hyps
+
+def prepare_for_sclite(hypothesis):
+    hyps, refs, speakers, utt_durations = [], [], [], []
+    for key in hypothesis.keys():
+        recording = hypothesis[key]
+        for utt in tqdm(recording):
+            seg_start, seg_end = utt['meta_data']['timings'].values()
+            dur_sec = seg_end - seg_start
+            best_hyp = utt['best_hyp']
+            speaker = "_".join(utt['meta_data']['speaker'])
+
+            utt_durations.append(dur_sec)
+            target = utt['targets'][0]
+            speakers.append(speaker)
+            hyps.append(best_hyp)
+            refs.append(target)
+    return hyps, refs, speakers, utt_durations
+
 
 def get_next_target(args, next_utt, prev_end, tokenizer):
     '''gets first word of next utterance if it is within max_utt_gap of previous utterance
@@ -305,6 +324,21 @@ def main(args, hypothesis):
     print(f'WER: {wer}')
 
 
+    if args.eval_with_sclite != '':
+        sclite_path = request_env(env_name='SCLITE_PATH', env_path=args.env_file)
+        hyps, refs, speakers, utt_durations = prepare_for_sclite(hypothesis)
+        refname, hypname = write_trn_files(
+            refs = refs,
+            hyps = hyps,
+            speakers = speakers,
+            encoded_lens = utt_durations,
+            fname = 'date',
+            out_dir = args.eval_with_sclite
+        )
+        wer = eval_with_sclite(ref=refname, hyp=hypname, SCLITE_PATH=sclite_path)
+        print(f'WER (sclite): {wer}')
+
+
     
     
 
@@ -325,8 +359,10 @@ if __name__ == '__main__':
     parser.add_argument('--temperature', type=float, default=0.85) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
     parser.add_argument('-use_cache','--use_cached_scores', action='store_true', help='whether to use cached scores from previous runs rather than recomputing them ')
     parser.add_argument('-v','--verbose', action='store_true', help='whether to print out the rescored hypothesis')
-
+    parser.add_argument('-sclite', '--eval_with_sclite', default='', help='false if blank, path if not. If not blank, will evaluate the rescored hypothesis with sclite and save the results to the specified path')
     parser.add_argument('-history','--max_history_len', type=int, default=-1)
+
+    parser.add_argument('-env','--env_file', default='/exp/exp1/acp21rjf/deliberation/speachy/.env', help='path to sclite executable')
 
     parser.add_argument('--no_wandb', action='store_true')
     args = parser.parse_args()

@@ -1,7 +1,8 @@
 
 from typing import List, Dict, Any
 from os import path
-import subprocess, datetime, json, os, re
+import subprocess, datetime, json, re
+import os
 import lhotse
 from lhotse import CutSet
 from tqdm import tqdm
@@ -9,7 +10,12 @@ import torch
 from collections import OrderedDict
 import argparse
 import pickle as pkl
+from os.path import join
 
+from speachy.utils.helpers import (
+    check_exists,
+    read_text
+)
 
 
 
@@ -150,3 +156,39 @@ def get_parameters(model, verbose=False):
 def load_pkl(path):
     with open(path, 'rb') as f:
         return pkl.load(f)
+
+
+def write_trn_files(refs:List[str], hyps:List[str], speakers:List[str]=[], encoded_lens:List[int]=[], fname:str='date', out_dir:str='./'): # added to speachy              
+    print(f'Writing trn files to {out_dir}')
+    assert len(refs) == len(hyps), 'refs and hyps must be the same length'
+    if len(speakers) != len(refs):
+        speakers = ['any'] * len(refs)
+        print('Speaker not provided or not the same length as refs and hyps. Using "any" for all.')
+    if len(encoded_lens) != len(refs):
+        encoded_lens = [-1] * len(refs)
+        print('Encoded lens not provided or not the same length as refs and hyps. Using -1 for all.')
+
+    if fname == 'date':
+        fname = get_date()
+        print(f'No fname provided. Using {fname} (date) for fname.')
+    fname = fname if fname.endswith('.trn') else fname + '.trn'
+    
+    refname = join(out_dir, 'ref_' + fname)
+    hypname = join(out_dir, 'hyp_' + fname)
+    print(f'Writing {refname} and {hypname}')
+    for i, (ref, hyp, speaker, encoded_len) in enumerate(zip(refs, hyps, speakers, encoded_lens)):
+        with open(refname, 'a') as f:
+            f.write(f';;len: {encoded_len}\n{ref} ({speaker}_{i})\n')
+        with open(hypname, 'a') as f:
+            f.write(f';;len: {encoded_len}\n{hyp} ({speaker}_{i})\n')
+    print('All Done')
+    return refname, hypname
+
+def eval_with_sclite(ref, hyp, SCLITE_PATH, mode='dtl all'):
+    list(map(check_exists, [ref, hyp]))
+    cmd = f'{SCLITE_PATH} -r {ref} -h {hyp} -i rm -o {mode} stdout > {hyp}.out'
+    run_cmd(cmd)
+    outf = read_text(f'{hyp}.out')
+    wer = [el for el in outf if 'Percent Total Error' in el][0]
+    print(f'Saved output to {hyp}.out')
+    return wer

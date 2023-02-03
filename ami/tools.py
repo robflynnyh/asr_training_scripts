@@ -65,7 +65,7 @@ def ifexists_call(var:Any, fn:callable, *args, **kwargs) -> Any:
 def iftrue_call(var:Any, fn:callable, *args, **kwargs) -> Any:
     return fn(*args, **kwargs) if var else None
 
-def write_trn_files(refs:List[str], hyps:List[str], speakers:List[str]=[], encoded_lens:List[int]=[], fname:str='date', out_dir:str='./'):
+def write_trn_files(refs:List[str], hyps:List[str], speakers:List[str]=[], encoded_lens:List[int]=[], fname:str='date', out_dir:str='./'): # added to speachy              
     print(f'Writing trn files to {out_dir}')
     assert len(refs) == len(hyps), 'refs and hyps must be the same length'
     if len(speakers) != len(refs):

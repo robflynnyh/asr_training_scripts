@@ -157,7 +157,7 @@ class Sampler(object):
         return next(self.generator)
       
 @torch.no_grad()
-def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
+def validate_one_epoch_________(model, val_dataloader, device, sanity_check=False):
     model.eval()
     pbar = tqdm(val_dataloader, total=len(val_dataloader))
     wers = []
@@ -200,7 +200,7 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
 '''
 
 @torch.no_grad()
-def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
+def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
     model.eval()
     val_dataloader = list(val_dataloader)
     pbar = tqdm(val_dataloader, total=len(val_dataloader))
@@ -223,9 +223,13 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
                 prev_fetch = prev_fetch[sb_idxs]
                 prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
                 prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
+                if args.shift_states:
+                    top_states = prev_states['cache'][-1][None]
+                    new_states = torch.cat([prev_states['cache'], top_states])
+                    prev_states['cache'] = new_states[1:] # shift states down by 1
             
-            token_lens += 1 # add 1 for bos
-            tokens = add_bos(tokens, bos_token_id=0)
+            token_lens += 1 if not exists(prev_states) else 0 # add 1 for bos if using
+            tokens = add_bos(tokens, bos_token_id=0) if not exists(prev_states) else tokens # add bos only if this is the first sub-batch
             targets = tokens.clone()
             targets[:, :-1] = tokens[:, 1:] # shift 
             targets = add_eos(targets, eos_id=-100, token_lens=token_lens)
@@ -254,36 +258,14 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
     return  sum(losses) / len(losses)
 
 
-def mwer_loss_weighting(loss, wer_scores, B, N, token_lens, sbatch_lens):
-    '''
-    loss: [B, N]
-    wer_scores: [B, N] # scores based on WER
-    B: batch size, N: sequence length
-    token_lens: [B] number of tokens in each batch
-    '''
-    seq_scores = -loss.view(B,N).sum(-1)
-    sb_starts = sbatch_lens.cumsum(dim=0) - sbatch_lens 
-    sb_ends = sb_starts + sbatch_lens
-    seq_scores = torch.cat([seq_scores[sb_starts[ix]:sb_ends[ix]].softmax(-1)  for ix in range(sbatch_lens.size(0))]).to(seq_scores.device)
-    seq_scores = (seq_scores * wer_scores).sum() / B
-    target_ce = (loss[sb_starts].sum() / token_lens[sb_starts].sum()) * 0.01 # https://arxiv.org/pdf/1712.01818.pdf
 
-    return seq_scores + target_ce
-    
-    return ((loss.view(B, N) * wer_scores[:,None]).sum() / token_lens.sum()) 
 
-def intermediate_loss(loss_fn, interim_logits, targets, wer_scores, token_lens, sbatch_lens):
+def intermediate_loss(loss_fn, interim_logits, targets):
     if not exists(interim_logits):
         return None
     interims = torch.empty(interim_logits.shape[0], device=interim_logits.device)
     for i in range(interim_logits.shape[0]):
-        interims[i] = mwer_loss_weighting(
-            loss = loss_fn(interim_logits[i], targets, reduction='none'),
-            wer_scores = wer_scores,
-            B = interim_logits.shape[1], N = interim_logits.shape[2],
-            token_lens = token_lens,
-            sbatch_lens = sbatch_lens
-        )
+        interims[i] = loss_fn(interim_logits[i], targets)
     return torch.mean(interims)
 
 
@@ -306,11 +288,8 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True) 
 
                 tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
-                prev_fetch, sb_lengths, sb_scores = sub_batch['prev_fetch'], sub_batch['sb_lengths'], -sub_batch['scores'] # scores are negative for the softmax
+                prev_fetch, sb_lengths = sub_batch['prev_fetch'], sub_batch['sb_lengths'] # scores are negative for the softmax
                 sb_starts = sb_lengths.cumsum(dim=0) - sb_lengths 
-                sb_ends = sb_starts + sb_lengths
-                wer_scores = torch.cat([sb_scores[sb_starts[ix]:sb_ends[ix]] - sb_scores[sb_starts[ix]:sb_ends[ix]].mean() for ix in range(sb_lengths.size(0))]).to(device)
-         
 
 
                 if exists(prev_states) and exists(prev_fetch): # prev fetch is a list of indices that are present in the current sub-batch 
@@ -319,10 +298,14 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                     prev_fetch = prev_fetch[sb_idxs]
                     prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
                     prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
+                    if args.shift_states:
+                        top_states = prev_states['cache'][-1][None]
+                        new_states = torch.cat([prev_states['cache'], top_states])
+                        prev_states['cache'] = new_states[1:] # shift states down by 1
         
 
-                token_lens += 1 # add 1 for bos
-                tokens = add_bos(tokens, bos_token_id=0)
+                token_lens += 1 if not exists(prev_states) else 0 # add 1 for bos if using
+                tokens = add_bos(tokens, bos_token_id=0) if not exists(prev_states) else tokens # add bos only if this is the first sub-batch
                 targets = tokens.clone()
                 targets[:, :-1] = tokens[:, 1:] # shift 
                 targets = add_eos(targets, eos_id=-100, token_lens=token_lens)
@@ -331,15 +314,9 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
 
                 logits, interim_posteriors, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states)
                 
-                loss = mwer_loss_weighting(
-                    loss = loss_ce(logits=logits, labels=targets, ignore_index=-100, reduction='none'),
-                    wer_scores = wer_scores,
-                    B = logits.size(0), N = logits.size(1),
-                    token_lens=token_lens,
-                    sbatch_lens=sb_lengths
-                )
+                loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
                 
-                interim_loss = intermediate_loss(loss_ce, interim_posteriors, targets, wer_scores=wer_scores, token_lens=token_lens, sbatch_lens=sb_lengths)
+                interim_loss = intermediate_loss(loss_ce, interim_posteriors, targets)
                 loss = interim_loss * INTERPOLATE + loss * (1 - INTERPOLATE) if exists(interim_loss) else loss
                 total_sub_batch_lengths += token_lens.sum()
                 total_sub_batch_loss += loss * token_lens.sum() 
@@ -411,6 +388,7 @@ def main(args):
     )
 
     validate_one_epoch(
+        args,
         model = model,
         val_dataloader = Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False),
         device = device,
@@ -420,7 +398,7 @@ def main(args):
     train_sample_args = {
         'recordings': train_data,
         'num_utterances': args.utts_per_sample,
-        'num_negatives': args.negatives,
+        'num_negatives': 0,
         'max_gap': args.max_allowed_utterance_gap,
         'shuffle': True,
     }
@@ -436,7 +414,6 @@ def main(args):
         wandb.watch(model, log='all')
         print(f'\n\nWandb initialized with id {wandb.run.id}\n\n')
 
-    ## UP TO HERE IS CHECKED
     results = {}
     saved_checkpoints = []
     for epoch_ in range(args.epochs): # todo move epoch loop to model utils as is consistent across model types
@@ -462,6 +439,7 @@ def main(args):
 
         with ema.average_parameters(): # evaluate using ema of the parameters
             vloss = validate_one_epoch(
+                args,
                 model, 
                 Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False), 
                 device, 
@@ -500,17 +478,17 @@ def main(args):
             to_remove = saved_checkpoints.pop()
             os.remove(to_remove['path']) 
             
-# TODO:
-# - CONDENSE INDEXING - SEE LINE 214
+            
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--train_hyp', type=str, required=True)
     parser.add_argument('--dev_hyp', type=str, required=True)
     parser.add_argument('-utts','--utts_per_sample', type=int, default=5)
-    parser.add_argument('-negatives','--negatives', type=int, default=5)
     parser.add_argument('-batch','--batch_size', type=int, default=3)
     parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=10.0, help='max allowed gap between utterances in seconds')
+
+    parser.add_argument('--shift_states', action='store_true', help='shift states upwards for enhanced reccurence https://arxiv.org/abs/2012.15688')
 
     parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml', required=True)
     parser.add_argument('--checkpoint', type=str, default='')
@@ -521,7 +499,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_utt_gap', type=float, default=10.0)
 
     parser.add_argument('-device', '--device', type=str, default='auto')
-    parser.add_argument('--project_name', default='MWER-LM-FINETUNE_INTERSPEECH', type=str)
+    parser.add_argument('--project_name', default='FINETUNE-PG19-INTERSPEECH', type=str)
     parser = add_common_args(parser)
 
     args = parser.parse_args()
