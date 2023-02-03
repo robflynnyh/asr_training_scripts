@@ -3,7 +3,7 @@ from nemo.collections.asr.metrics.wer import word_error_rate
 import argparse 
 import pickle as pkl
 
-import tools
+
 from importlib import reload as rl
 
 from tqdm import tqdm
@@ -30,7 +30,8 @@ from speachy.lm.tools.train import add_bos as add_bos_token
 
 from speachy.utils.general import (
     load_config,
-    load_checkpoint
+    load_checkpoint,
+    load_tokenizer
 )
 
 class argsclass:
@@ -297,7 +298,7 @@ def main(args, hypothesis):
         device = torch.device(args.device)
         config = load_config(args.config)
         tokenizer_path = os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
-        tokenizer = tools.load_tokenizer(tokenizer_path)
+        tokenizer = load_tokenizer(tokenizer_path)
         model = autoload(config=config, tokenizer=tokenizer)
         epoch, val_loss  = load_checkpoint(args=argsclass(**{'checkpoint': args.checkpoint}), model=model, force_cpu=True)
         modeltype = config['model']['modeltype']

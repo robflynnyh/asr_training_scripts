@@ -13,6 +13,11 @@ from speachy.asr.dataloading import non_iid_dataloader as niiddl
 from speachy.lm.tools.loading import autoload
 import os 
 
+from speachy.utils.general import (
+    load_config,
+    load_checkpoint
+)
+
 durations = [
     0.0,
     15.0,
@@ -46,7 +51,7 @@ def main(args):
     device = torch.device(args.device)
 
    
-    config = lm_utils.load_config(args.config)
+    config = load_config(args.config)
     tokenizer_path = os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
     tokenizer = tools.load_tokenizer(tokenizer_path)
 
