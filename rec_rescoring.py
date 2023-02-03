@@ -40,8 +40,8 @@ from torch_ema import ExponentialMovingAverage
 
 INTERPOLATE = 0.5
 
-def get_edit_distance(hyps, target):
-    return list(map(lambda x: distance(x, target) / len(target), hyps))
+def get_edit_distance(hyps, target): # THIS ISN'T RIGHT
+    return list(map(lambda x: distance(x, target) / (len(target)+1), hyps))
 
 flatten_nested_list = lambda l: [item for sublist in l for item in sublist]
     
@@ -114,6 +114,7 @@ def create_samples_from_recording(recording, num_utterances, num_negatives, max_
         hyps = list(filter(lambda el:el != target, hyps))
         hyps = np.random.choice(hyps, min(num_negatives, len(hyps)), replace=False).tolist()
         examples = [target] + hyps
+        
         error_rates = get_edit_distance(examples, target)
         samples[-1].append((examples, error_rates))
         prev_end = end_t
@@ -140,7 +141,7 @@ class Sampler(object):
 
         self.generator = self.__generator__() 
 
-    def __generator__(self): # pre-compute this, prepping batches on-the-fly is hurting utilization )::::
+    def __generator__(self): 
         for i in range(0, len(self.samples), self.batch_size):
             yield get_sub_batches([self.samples[i] for i in self.sample_indices[i:i+self.batch_size]], self.tokenizer)
 
@@ -156,47 +157,12 @@ class Sampler(object):
     def __next__(self):
         return next(self.generator)
       
-@torch.no_grad()
-def validate_one_epoch_________(model, val_dataloader, device, sanity_check=False):
-    model.eval()
-    pbar = tqdm(val_dataloader, total=len(val_dataloader))
-    wers = []
-    losses = []
-    print('Evaluation epoch')
-    for batch in pbar:
-        tokens, token_lens = batch_to_device(batch, device)
-    
-        token_lens += 1 # add 1 for bos
-        tokens = add_bos(tokens, bos_token_id=0)
-        targets = tokens.clone()
-        targets[:, :-1] = tokens[:, 1:]
-        targets = add_eos(targets, eos_id=0, token_lens=token_lens)
-        
-        mask = token_lens_to_mask(token_lens)
-        targets = mark_padding(targets, mask, pad_id=-100)
-
-        model_args = {'x': tokens, 'mask': mask} if isfalse(callable(getattr(model, 'get_args', False))) \
-            else model.get_args(tokens=tokens, mask=mask, lengths=token_lens)
-
-        model_out = model(**model_args)
-        
-        if callable(getattr(model, 'process_labels', None)):
-            targets = model.process_labels(targets)
-
-        loss = loss_ce(logits=model_out, labels=targets, ignore_index=-100)
-        losses.append(loss.item())
-
-        if sanity_check:
-            return True
-
-    return  sum(losses) / len(losses)
-
 '''
-                    sb_idxs = torch.arange(sb_lengths.size(0))
-                    sb_idxs = torch.cat([sb_idxs[ix].repeat(sb_lengths[ix]) for ix in range(sb_lengths.size(0))]).to(device)
-                    prev_fetch = prev_fetch[sb_idxs]
-                    prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
-                    prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
+    sb_idxs = torch.arange(sb_lengths.size(0))
+    sb_idxs = torch.cat([sb_idxs[ix].repeat(sb_lengths[ix]) for ix in range(sb_lengths.size(0))]).to(device)
+    prev_fetch = prev_fetch[sb_idxs]
+    prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
+    prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
 '''
 
 @torch.no_grad()
@@ -228,11 +194,13 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
                     new_states = torch.cat([prev_states['cache'], top_states])
                     prev_states['cache'] = new_states[1:] # shift states down by 1
             
-            token_lens += 1 if not exists(prev_states) else 0 # add 1 for bos if using
-            tokens = add_bos(tokens, bos_token_id=0) if not exists(prev_states) else tokens # add bos only if this is the first sub-batch
+            using_bos = not exists(prev_states) or args.bos_eos
+            token_lens += 1 if using_bos else 0 # add 1 for bos if using
+            tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
             targets = tokens.clone()
             targets[:, :-1] = tokens[:, 1:] # shift 
-            targets = add_eos(targets, eos_id=-100, token_lens=token_lens)
+            eos_id = -100 if not args.bos_eos else 0
+            targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
             mask = token_lens_to_mask(token_lens)
             targets = mark_padding(targets, mask, pad_id=-100)
 
@@ -246,7 +214,7 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
             
             prev_states = { # cache is [L, KV, B, H, N, D] ! (L = layers, KV = key/value, B = batch, H = heads, N = num tokens, D = dim)
                 'cache_lengths': cached_kvs['cache_lengths'][target_positions],
-                'cache': cached_kvs['cache'][:, :, target_positions] # only keep states from the "gold" hypothesis
+                'cache': cached_kvs['cache'][:, :, target_positions] # only keep states from the "gold" hypothesis (teacher forcing)
             } if exists(cached_kvs) else None
 
         losses.append(sum(total_sb_losses) / total_lengths)
@@ -303,12 +271,13 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                         new_states = torch.cat([prev_states['cache'], top_states])
                         prev_states['cache'] = new_states[1:] # shift states down by 1
         
-
-                token_lens += 1 if not exists(prev_states) else 0 # add 1 for bos if using
-                tokens = add_bos(tokens, bos_token_id=0) if not exists(prev_states) else tokens # add bos only if this is the first sub-batch
+                using_bos = not exists(prev_states) or args.bos_eos
+                token_lens += 1 if using_bos else 0 # add 1 for bos if using
+                tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
                 targets = tokens.clone()
                 targets[:, :-1] = tokens[:, 1:] # shift 
-                targets = add_eos(targets, eos_id=-100, token_lens=token_lens)
+                eos_id = -100 if not args.bos_eos else 0
+                targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
                 mask = token_lens_to_mask(token_lens)
                 targets = mark_padding(targets, mask, pad_id=-100)
 
@@ -488,6 +457,7 @@ if __name__ == '__main__':
     parser.add_argument('-batch','--batch_size', type=int, default=3)
     parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=10.0, help='max allowed gap between utterances in seconds')
 
+    parser.add_argument('-bos_eos', '--bos_eos', action='store_true', help='always use bos and eos tokens')
     parser.add_argument('--shift_states', action='store_true', help='shift states upwards for enhanced reccurence https://arxiv.org/abs/2012.15688')
 
     parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml', required=True)

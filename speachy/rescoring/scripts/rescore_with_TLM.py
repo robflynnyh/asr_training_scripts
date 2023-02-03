@@ -49,7 +49,7 @@ def get_text_probability(args, model, tokenizer, text, cached_states=None, next_
     token_prev = tokens
     tokens = torch.tensor(tokens).unsqueeze(0).long()
 
-    add_bos = cached_states is None # problem
+    add_bos = cached_states is None or args.eosbos 
   
     token_lens = torch.tensor([tokens.shape[-1]]) + (1 if add_bos else 0)
     if tokens.shape[-1] == 0: # idk what to do here tbh
@@ -221,6 +221,7 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code
         prev_end = segment_start if prev_end is None else prev_end # swap with segment_end??
         
         next_target = get_next_target(args, recording_hyps[i+1], segment_end, tokenizer) if i<len(recording_hyps)-1 else None
+        next_target = 0 if args.eosbos else next_target # if we are modelling boundaries, we don't need the next word
         #next_target = None
         
         kv_cache = None if prev_end - segment_start > args.max_utt_gap else kv_cache
@@ -365,6 +366,7 @@ if __name__ == '__main__':
     parser.add_argument('-v','--verbose', action='store_true', help='whether to print out the rescored hypothesis')
     parser.add_argument('-sclite', '--eval_with_sclite', default='', help='false if blank, path if not. If not blank, will evaluate the rescored hypothesis with sclite and save the results to the specified path')
     parser.add_argument('-history','--max_history_len', type=int, default=-1)
+    parser.add_argument('-eosbos','--eosbos', action='store_true', help='whether to model boundary tokens in the TLM')
 
     parser.add_argument('-env','--env_file', default='/exp/exp1/acp21rjf/deliberation/speachy/.env', help='path to sclite executable')
 
