@@ -1,5 +1,5 @@
 
-dataset: 'TED'
+dataset: 'AMI'
 
 model:
   tokenizer:

@@ -5,11 +5,15 @@ import pickle as pkl
 
 import tools
 from importlib import reload as rl
-
+import non_iid_dataloader as niiddl, lhotse
 from tqdm import tqdm
 import torch
 import torch
-
+from omegaconf.omegaconf import OmegaConf
+import lm_utils
+import model_utils
+from tools import isfalse, istrue, exists
+import non_iid_dataloader as niiddl
 
 import os 
 from einops import rearrange
@@ -23,15 +27,8 @@ import wandb
 from speachy.lm.tools.loading import autoload
 from speachy.rescoring.scripts.compute_rescore_wer import main as compute_rescore_wer
 from speachy.utils.misc import write_trn_files, eval_with_sclite
-from speachy.utils.helpers import request_env, isfalse, istrue, exists
+from speachy.utils.helpers import request_env
 
-from speachy.lm.tools.train import add_bos as add_bos_token
-
-
-from speachy.utils.general import (
-    load_config,
-    load_checkpoint
-)
 
 class argsclass:
     def __init__(self, **kwargs):
@@ -55,7 +52,7 @@ def get_text_probability(args, model, tokenizer, text, cached_states=None, next_
         return torch.tensor(torch.nan), cached_states, calc_length_penalty(1)
     #assert cached_states is None, 'FAK'
     tokens, token_lens = tokens.to(device), token_lens.to(device)
-    tokens = add_bos_token(tokens, bos_token_id=0) if add_bos else tokens # don't add bos if we're starting from a cached state (bos is already there)
+    tokens = lm_utils.add_bos(tokens, bos_token_id=0) if add_bos else tokens # don't add bos if we're starting from a cached state (bos is already there)
     targets = tokens.clone()
     
     targets[:, :-1] = tokens[:, 1:] # shift targets by 1 
@@ -68,7 +65,6 @@ def get_text_probability(args, model, tokenizer, text, cached_states=None, next_
     #targets = lm_utils.mark_padding(targets, lm_utils.token_lens_to_mask(token_lens), pad_id=-100) # probably uncecery since batch of 1 so nooo padding
     
     logits, _, cached_states = model(x=tokens, length=token_lens, cache=cached_states)
- 
 
     # remove first and last token 
     toadd = 1 if add_bos else 0
@@ -135,7 +131,7 @@ def rescore(args, recording_hyps, standardise_stats):
 
             hyptext = cur['text']
             AM_prob, NGRAM_prob = torch.tensor(cur['am_score']), torch.tensor(cur['ngram_score'])
-            AM_prob = AM_prob
+            AM_prob = (AM_prob - standardise_stats['am_mean']) / standardise_stats['am_std']
 
     
             prob = torch.tensor(cur['tlm_prob'])
@@ -143,7 +139,7 @@ def rescore(args, recording_hyps, standardise_stats):
             length_penalty = torch.tensor(cur['length_penalty'])
             penalize_len = length_penalty * args.length_penalty
             prob = prob * args.tlm_scale - penalize_len
-            NGRAM_prob = NGRAM_prob
+            NGRAM_prob = (NGRAM_prob - standardise_stats['ngram_mean']) / standardise_stats['ngram_std']
             NGRAM_prob = NGRAM_prob * args.ngram_scale
 
             cur['rescore_lp'] = (prob + AM_prob + NGRAM_prob).item()
@@ -213,6 +209,7 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code
     prev_end = None
     kv_cache = None
     kvs_to_cache = None
+    text_history = ''
     for i, utt in enumerate(tqdm(recording_hyps)):
 
         kv_cache = {'cache': kvs_to_cache['cache'].clone(), 'cache_lengths': kvs_to_cache['cache_lengths'].clone()} if kvs_to_cache is not None else None # np
@@ -223,25 +220,41 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code
         #next_target = None
         
         kv_cache = None if prev_end - segment_start > args.max_utt_gap else kv_cache
+        text_history = '' if kv_cache is None else text_history
+        #print(text_history)
         kv_cache = trim_cache(kv_cache, max_history)
         best_log_p, best_hyp = float('-inf'), ''
 
 
         '''prob, cache, length_penalty = get_text_probability(args, model, tokenizer, target, cached_states=kv_cache, next_target=next_target)
         kvs_to_cache = {'cache': cache['cache'].clone(), 'cache_lengths': cache['cache_lengths'].clone()}'''  #debug thing
+        current_batch_text = []
+        current_batch_AM_probs = []
+        current_batch_NGRAM_probs = []
+        current_batch_tlm_probs = []
+        current_batch_lengths_penalties = []
 
         for idx in utt['beams'][0].keys():
             cur = utt['beams'][0][idx]
+            if args.max_batch_size <= len(current_batch_text) or idx >= max_beam or idx >= len(utt['beams'][0].keys()):
+                out = compute_batch_probabilities(
+                    args,
+                )
             if idx >= max_beam:
                 break
             if args.use_cached_scores and 'tlm_prob' not in cur:
                 continue
 
-            hyptext = cur['text']
-            AM_prob, NGRAM_prob = torch.tensor(cur['am_score']), torch.tensor(cur['ngram_score'])
+            current_batch_text.append(cur['text'])
+            current_batch_AM_probs.append(torch.tensor(cur['am_score']))
+            current_batch_NGRAM_probs.append(torch.tensor(cur['ngram_score']))
+
+            
+
             prob, cache, length_penalty = get_text_probability(args, model, tokenizer, hyptext, cached_states=kv_cache, next_target=next_target)
 
             if idx == 0 and cache is not None:
+                text_history += ' ' + hyptext
                 kvs_to_cache = {'cache': cache['cache'].clone(), 'cache_lengths': cache['cache_lengths'].clone()}
         
             prob = NGRAM_prob if prob.isnan() or prob == float('-inf') or prob == 0 else prob # just in case
@@ -295,11 +308,11 @@ def get_standardisation_stats(hypothesis):
 def main(args, hypothesis):
     if args.use_cached_scores == False:
         device = torch.device(args.device)
-        config = load_config(args.config)
+        config = lm_utils.load_config(args.config)
         tokenizer_path = os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
         tokenizer = tools.load_tokenizer(tokenizer_path)
         model = autoload(config=config, tokenizer=tokenizer)
-        epoch, val_loss  = load_checkpoint(args=argsclass(**{'checkpoint': args.checkpoint}), model=model, force_cpu=True)
+        epoch, val_loss  = model_utils.load_checkpoint(args=argsclass(**{'checkpoint': args.checkpoint}), model=model, force_cpu=True)
         modeltype = config['model']['modeltype']
         print(f'Loaded model {args.checkpoint} with epoch {epoch} and val_loss {val_loss}\n Model type: {modeltype}')
         model.to(device)
@@ -346,7 +359,9 @@ def main(args, hypothesis):
     
 
 if __name__ == '__main__':
+    raise NotImplementedError('Not implemented yet (wip)')
     parser = argparse.ArgumentParser()
+    parser.add_argument('-batch','--max_batch_size', type=int, default=1)
     parser.add_argument("--hyppkl", type=str, default='./dev_rescored.pkl')
     parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml')
     parser.add_argument('--device', type=str, default='auto')

@@ -39,6 +39,7 @@ def get_duration_per_partition(split, verbose:bool=True):
 def prepare_samples(
         meetings, 
         max_duration=20, 
+        max_utts_per_cut=-1,
         concat_samples=False, 
         split_speakers=False, 
         gap=0.1, 
@@ -69,6 +70,9 @@ def prepare_samples(
         assert max_allowed_utterance_gap < 0, "max_allowed_utterance_gap is not used with single_speaker_with_gaps, set to -1 to disable"
         assert speaker_gap > gap, "speaker_gap is smaller than gap, this is unintended behaviour"
 
+    
+    max_utts_per_cut = max_utts_per_cut if max_utts_per_cut > 0 else None
+    
     samples = []
     #print('num_meeetings', len(meetings))
     for key in meetings.keys():
@@ -79,12 +83,13 @@ def prepare_samples(
                 cuts = meeting,
                 gap = gap, 
                 max_duration = max_duration,
+                max_utterances = max_utts_per_cut,
                 concat_cuts = concat_samples, 
                 seperate_speakers = split_speakers,
                 speaker_list = get_speakers(meeting) if split_speakers else [],
                 max_allowed_utterance_gap = max_allowed_utterance_gap,
             ) \
-                if isfalse(single_speaker_with_gaps) else individual_speaker_concat(
+                if isfalse(single_speaker_with_gaps) else individual_speaker_concat( # get rid of this really its weird thing to do imo
                     cuts = meeting,
                     gap = gap,
                     max_duration = max_duration,
@@ -147,6 +152,23 @@ class ___Minimal_IID_Dataset(torch.utils.data.Dataset):
         "token_lens": token_lens,
     }
 
+def get_meta_data(cuts:CutSet):
+    ''' returns a dictionary of metadata for each cut in the cutset '''
+    metadata = []
+    for cut in cuts:
+        cutdata = {}
+        #print(len(cut.supervisions))
+        #print(cut.supervisions[-1])  #############
+        supervisions = cut.supervisions
+        cutdata['individual_utterance_text'] = [el.text for el in supervisions]
+        cutdata['unique_id'] = cut.id
+        cutdata['timings'] = [el.custom for el in supervisions]
+        cutdata['recording_id'] = [el.recording_id for el in supervisions]
+        cutdata['utterance_id'] = [el.id for el in supervisions]
+        cutdata['speaker'] = [el.speaker for el in supervisions]
+        metadata.append(cutdata)
+    return metadata
+
 
 class Minimal_IID_Dataset(torch.utils.data.Dataset):
   def __init__(self, tokenizer: TokenizerCollator, all_cuts, text_only=False):
@@ -175,30 +197,39 @@ class Minimal_IID_Dataset(torch.utils.data.Dataset):
     }
 
 class Minimal_Evaluation_IID_Dataset(torch.utils.data.Dataset):
-  def __init__(self, all_cuts, return_speaker=False):
+  def __init__(
+        self, 
+        all_cuts, 
+        return_speaker=False,
+        return_metadata=False,
+    ):
     self.all_cuts = all_cuts
     self.return_speaker = return_speaker
+    self.return_metadata = return_metadata
     
   def __len__(self):
     return len(self.all_cuts)
 
   def __getitem__(self, idx) -> dict:
     cuts = self.all_cuts[idx]
+    
     audios, audio_lens = collate_audio(cuts)
     out = {
         "audio": audios,
         "audio_lens": audio_lens,
         "text": [tools.remove_multiple_spaces(" ".join(supervision.text for supervision in cut.supervisions)) for cut in cuts],
     }
-
     if self.return_speaker:
         out["speakers"] = [[el.speaker for el in cut.supervisions] for cut in cuts]
+    if self.return_metadata:
+        out["metadata"] = get_meta_data(cuts)
 
     return out
 
 def get_eval_dataloader(
     split,
     max_duration=25,
+    max_utts_per_cut=-1,
     return_speaker=False,
     batch_size=1,
     concat_samples=False,
@@ -208,14 +239,18 @@ def get_eval_dataloader(
     speaker_gap=1.0,
     single_speaker_with_gaps=False,
     max_allowed_utterance_gap=-1,
+    return_meta_data=False,
+    shuffle = False,
     ):
     assert isfalse(split_speakers) or concat_samples, "concat_samples must be True if split_speakers is True"
-    assert text_only, "Not here use standard dataloader"
+    assert isfalse(text_only), 'Not implemented'
 
     meetings = prepare_partition(split)
+
     samples = prepare_samples(
         meetings = meetings, 
         max_duration = max_duration, 
+        max_utts_per_cut = max_utts_per_cut,
         concat_samples=concat_samples, 
         split_speakers=split_speakers, 
         gap=gap, 
@@ -224,9 +259,9 @@ def get_eval_dataloader(
         max_allowed_utterance_gap=max_allowed_utterance_gap,
     )
     return torch.utils.data.DataLoader(
-        Minimal_Evaluation_IID_Dataset(samples, return_speaker=return_speaker),
+        Minimal_Evaluation_IID_Dataset(samples, return_speaker=return_speaker, return_metadata=return_meta_data),
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=shuffle,
         collate_fn=collate_batch_fn_eval
     )
 
@@ -242,10 +277,11 @@ def collate_batch_fn_eval(batch):
     # concatenate everything
     collated = {}
     for key in batch[0].keys():
-        if key == 'text' or key == 'speakers':
+        if key == 'text' or key == 'speakers' or key == 'metadata': # could just check if its a list or not an tensor instance
             collated[key] = [[sub_el] for el in batch for sub_el in el[key]]
         else:
             collated[key] = torch.cat([el[key] for el in batch], dim=0)
+
 
     return collated
 

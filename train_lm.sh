@@ -4,13 +4,13 @@ python train_LM.py --checkpoint 'pg_19_pretrained_c_62_id_87.pt' \
     --checkpoint_dir './checkpoints/1kw_pg19checkpoints_nths/' \
     --model_config './experiment_configs/lm/decoder_pg19.yaml' \
     --min_lr 1e-6 \
-    --max_lr 4e-5 \
+    --max_lr 3e-5 \
     --step_size 250 \
     --accumulate_gradients 1 \
     --clip_gradients \
     --clip_gradients_value 15 \
-    --micro_batch_duration 90 \
-    --micro_batch_number 15 \
+    --micro_batch_duration 60 \
+    --micro_batch_number 20 \
     --max_allowed_utterance_gap 10.0 \
     --wandb_id '' \
     --save_top_k 1 \

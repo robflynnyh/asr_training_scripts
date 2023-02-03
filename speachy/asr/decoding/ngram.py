@@ -16,8 +16,8 @@ def decode_beams_lm(
         decoder, 
         beam_width=100, 
         encoded_lengths=None,
-        beam_prune_logp = -10000, # no pruning
-        token_min_logp = -5,
+        beam_prune_logp = -15, 
+        token_min_logp = -8,
         prune_history = False,
     ):
     decoded_data = []
@@ -25,6 +25,7 @@ def decode_beams_lm(
         encoded_lengths = [len(logits) for logits in logits_list]
 
     for logits, length in zip(logits_list, encoded_lengths):
+        
         beams = decoder.decode_beams(
             logits = logits[:length],
             beam_prune_logp = beam_prune_logp, 
@@ -34,11 +35,12 @@ def decode_beams_lm(
         )
         decoded = {}
         for i, beam in enumerate(beams):
+
             decoded[i] = {
-                'text': beam[0],
-                'ngram_score': beam[-1] - beam[-2], # score = ngram_score + am_score
-                'am_score': beam[-2],
-                'score': beam[-1]
+                'text': beam.text,
+                'ngram_score': beam.lm_score - beam.logit_score,
+                'am_score': beam.logit_score,
+                'score': beam.lm_score # # score = ngram_score + am_score
             }
         decoded_data.append(decoded)
 

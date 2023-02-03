@@ -9,8 +9,8 @@ import torch
 from omegaconf.omegaconf import OmegaConf
 import model_utils
 from tools import isfalse, istrue, exists
-import non_iid_dataloader as niiddl
-import lm_utils
+from speachy.asr.dataloading import non_iid_dataloader as niiddl
+from speachy.lm.tools.loading import autoload
 import os 
 
 durations = [
