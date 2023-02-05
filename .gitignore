@@ -10,6 +10,7 @@
 *.arpa
 *.gz
 *.pkl
+*.lm.bin
 
 wandb/
 wandb/*

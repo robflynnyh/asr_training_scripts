@@ -14,7 +14,8 @@ from os.path import join
 
 from speachy.utils.helpers import (
     check_exists,
-    read_text
+    read_text,
+    write_text
 )
 
 
@@ -46,6 +47,19 @@ def convert_lhotse_to_manifest(split:CutSet, target:str):
         for line in manifest:
             f.write(json.dumps(line) + '\n')
     print(f'Saved manifest to {target}')
+
+def text_to_token(fpath:str, tokenizer, target:str=None):
+    '''Takes file path and tokenizer and converts text to token symbols (not ids)
+    if target is provided, saves to target
+    '''
+    text = read_text(fpath)
+    tokenized = []
+    for line in tqdm(text):
+        tokenized.append(" ".join(tokenizer.text_to_tokens(line)))
+    if target is not None:
+        write_text(target, tokenized)
+    return tokenized
+
 
 def list_checkpoint_val_losses(checkpoint_dir:str, verbose:bool=True, return_data:bool=False) -> Dict[str, float]:
     checkpoints = {}

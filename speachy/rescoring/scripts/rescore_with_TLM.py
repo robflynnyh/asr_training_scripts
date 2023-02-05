@@ -76,14 +76,14 @@ def get_text_probability(args, model, tokenizer, text, cached_states=None, next_
     logits = logits[:, toadd:-1, :] if not exists(next_target) else logits[:, toadd:, :] # remove last target if not provided
     targets = targets[:, toadd:] # 
 
-    # remove eos/bos from probabilities
-    logits = logits[:, :, 1:]
-    # shift targets by 1 (no more eos/bos)
-    targets -= 1
+    if not args.eosbos:
+        logits = logits[:, :, 1:] # remove eos/bos from probabilities
+        targets -= 1 # shift targets by 1 (no more eos/bos)
 
     # temperature
     logits = logits / args.temperature
     logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
+
 
     logprobs = logprobs.squeeze(0).gather(1, targets.squeeze(0).unsqueeze(1)).squeeze() 
     logprobslen = logprobs.shape[0] if len(logprobs.shape) > 0 else 1
@@ -240,6 +240,7 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps): # disgusting code
                 continue
 
             hyptext = cur['text']
+          
             AM_prob, NGRAM_prob = torch.tensor(cur['am_score']), torch.tensor(cur['ngram_score'])
             prob, cache, length_penalty = get_text_probability(args, model, tokenizer, hyptext, cached_states=kv_cache, next_target=next_target)
 

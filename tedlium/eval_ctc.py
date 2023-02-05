@@ -22,11 +22,18 @@ import pickle as pkl
 from tools import isfalse, istrue, exists, save_json
 
 
-def kenlm_decoder(arpa_, vocab, alpha=0.6, beta=0.8):  
+def kenlm_decoder(args, arpa_, vocab, alpha=0.6, beta=0.8):  
     arpa = arpa_ if arpa_ != '' else None
     alpha = alpha if arpa_ != '' else None
     beta = beta if arpa_ != '' else None
-    decoder = build_ctcdecoder(vocab, kenlm_model_path=arpa, alpha=alpha, beta=beta)
+    decoder = build_ctcdecoder(
+        vocab, 
+        kenlm_model_path=arpa, 
+        alpha=alpha, 
+        beta=beta,
+        lm_score_boundary=not args.lm_dont_score_boundary,
+        unk_score_offset=args.lm_unk_score_offset,
+    )
     print(f'Loaded KenLM model from {arpa} with alpha={alpha} and beta={beta}')
     return decoder
 
@@ -163,9 +170,9 @@ def main(args):
 
     if args.sweep == True:
         wandb.init(config=args, project="ami-ngram-lm-sweep")
-        decoder = kenlm_decoder(args.language_model, model.tokenizer.vocab, alpha=wandb.config['alpha'], beta=wandb.config['beta'])
+        decoder = kenlm_decoder(args, args.language_model, model.tokenizer.vocab, alpha=wandb.config['alpha'], beta=wandb.config['beta'])
     else:
-        decoder = kenlm_decoder(args.language_model, model.tokenizer.vocab, alpha=args.alpha, beta=args.beta)
+        decoder = kenlm_decoder(args, args.language_model, model.tokenizer.vocab, alpha=args.alpha, beta=args.beta)
     decoder_beams = 1 if args.language_model == '' else args.beam_size
     args.beam_size = decoder_beams #
     evaluate(args, model, corpus_dict[args.split], decoder)
@@ -194,6 +201,9 @@ if __name__ == '__main__':
     parser.add_argument('-nsc','--not_self_conditioned', action='store_true', help='use for non self-conditioned models')
     parser.add_argument('--config_from_checkpoint_dir', action='store_false', help='load config from checkpoint dir') ##chane
     parser.add_argument('-cer', '--cer', action='store_true', help='compute CER instead of WER')
+
+    parser.add_argument('--lm_dont_score_boundary', action='store_true', help='dont score boundary tokens')
+    parser.add_argument('--lm_unk_score_offset', type=float, default=-10, help='offset for unk score')
 
     parser.add_argument('--return_attention', action='store_true', help='return attention')
     parser.add_argument('--save_attention', action='store_true', help='save attention')

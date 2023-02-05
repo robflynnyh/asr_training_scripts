@@ -31,7 +31,18 @@ def get_date():
 
 def read_text(filename:str) -> List[str]:
     with open(filename, 'r') as f:
-        return f.read().split('\n')
+        txt = f.read().split('\n')
+    return txt if txt[-1] != '' else txt[:-1]
+
+def write_text(filename:str, text):
+    if type(text) == str:
+        with open(filename, 'w') as f:
+            f.write(text)
+    else:
+        with open(filename, 'w') as f:
+            for line in text:
+                f.write(line)
+                f.write('\n')
 
 def load_envs(env_path='.env'):
     env_file = read_text(env_path)
