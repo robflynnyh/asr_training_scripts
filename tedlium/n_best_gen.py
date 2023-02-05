@@ -25,6 +25,8 @@ import pickle as pkl
 from tools import isfalse, istrue, exists, save_json
 from nemo.collections.asr.metrics.wer import word_error_rate
 
+from collections import OrderedDict
+
 
 
 def enable_dropout(model, dropout_rate=0.0):
@@ -90,7 +92,7 @@ def get_logits(args, model, corpus):
     return hyp_data
 
 
-def first_pass_decode(args, vocab, hyp_data, beam_width, alpha, beta, ids_to_text_func):
+def first_pass_decode(args, bpe_lm, vocab, hyp_data, beam_width, alpha, beta, ids_to_text_func):
     beamer = nemo_asr.modules.BeamSearchDecoderWithLM(
         vocab=vocab,
         beam_width=beam_width,
@@ -106,49 +108,79 @@ def first_pass_decode(args, vocab, hyp_data, beam_width, alpha, beta, ids_to_tex
         beams_batch = beamer.forward(log_probs=probs, log_probs_length=None,)
     print('Finished decoding')
 
+
     new_hyp_data = []
     for hyp, beam_set in zip(hyp_data, beams_batch):
         beams_out = {}
         for cand_idx, cand in enumerate(beam_set):
-            pred_text = ids_to_text_func([ord(c) - 100 for c in cand[1]])
+            enc = [el for el in cand[1]]
+            first_pass_score = cand[0]
+            enc_text = " ".join(enc)
+            bpe_lm_score = bpe_lm.score(enc_text)
+            first_pass_length_pen = beta * len(enc)
+            am_score = -(bpe_lm_score*alpha - first_pass_score + first_pass_length_pen)
+            pred_text = ids_to_text_func([ord(c) - 100 for c in enc])
             beams_out[cand_idx] = {
                 'text': pred_text,
-                'am_score': cand[0],
+                'first_pass_score': cand[0],
+                'am_score': am_score,
+                'bpe_lm_score': bpe_lm_score,
             }
         new_hyp_data.append({
             'meta_data': hyp['meta_data'],
             'speaker_ids': hyp['speaker_ids'],
             'targets': hyp['targets'],
             'batch_num': hyp['batch_num'],
-            'beams': beams_out,
+            'beams': [beams_out],
         })
     return new_hyp_data
+
+
+def second_pass_rescore(args, ngram_lm, hyp_data, alpha, beta):
+    for hypothesis in hyp_data:
+        beams = hypothesis['beams'][0]
+        for beam_idx in beams.keys():
+            beam = beams[beam_idx]
+            text = beam['text']
+            text_len = len(text.split())
+            length_pen = beta * text_len if not args.log_beta else beta * np.log(text_len)
+            ngram_lm_score = ngram_lm.score(text, bos=False, eos=False)
+            beam['ngram_lm_score'] = ngram_lm_score
+            beam['second_pass_score'] = beam['am_score'] + alpha * ngram_lm_score + length_pen
+    return hyp_data
+            
+def reorder_beams(hyp_data, key):
+    '''reorders beams so that the best scoring beam is first using the value at key'''
+    for hyp in hyp_data:
+        hyp['beams'][0] = OrderedDict(sorted(hyp['beams'][0].items(), key=lambda x: x[1][key]))
+    return hyp_data
 
 def eval_beams(hyp_data):
     hyps, refs = [], []
     for hyp in hyp_data:
-        hyps.append(hyp['beams'][0]['text'])
+        hyps.append(hyp['beams'][0][0]['text'])
         refs.append(hyp['targets'][0])
     wer = word_error_rate(hyps, refs)
     return wer
 
 def load_pickle(path):
     with open(path, 'rb') as f:
-        return pkl.load(f)
+        pkl_data = pkl.load(f)
+    return pkl_data['stage'], pkl_data['data']
 
-def save_pickle(path, obj):
+def save_pickle(path, obj, stage='logits'):
     with open(path, 'wb') as f:
-        pkl.dump(obj, f)
+        pkl.dump({'stage':stage, 'data':obj}, f)
 
 def delete_pickle(path):
     os.remove(path)
 
-def search_first_pass_alpha_beta(args, vocab, hyp_data, ids_to_text_func, beam_width):
+def search_first_pass_alpha_beta_search(args, bpe_lm, vocab, hyp_data, ids_to_text_func, beam_width):
     results = []
     for alpha in [0.8, 0.9, 1.0, 1.1, 1.2]:
         for beta in [0.1, 0.2, 0.3]:
             print(f'alpha: {alpha}, beta: {beta}')
-            new_hyp_data = first_pass_decode(args, vocab, hyp_data, beam_width, alpha, beta, ids_to_text_func)
+            new_hyp_data = first_pass_decode(args, bpe_lm, vocab, hyp_data, beam_width, alpha, beta, ids_to_text_func)
             wer = eval_beams(new_hyp_data)
             print(f'wer: {wer}')
             results.append({
@@ -161,6 +193,8 @@ def search_first_pass_alpha_beta(args, vocab, hyp_data, ids_to_text_func, beam_w
     print(f'Best alpha: {best["alpha"]}, beta: {best["beta"]}, wer: {best["wer"]}')
     return alpha, beta
 
+#def second_pass_alpha_beta_seach()
+
 def main(args):
     model = load_model(args) if args.self_conditioned == False else load_sc_model(args)
     if args.checkpoint != '':
@@ -170,17 +204,34 @@ def main(args):
     corpus_dict = tools.load_corpus()
     tokenizer = tools.load_tokenizer(args.tokenizer_model)
     ids_to_text_func = tokenizer.ids_to_text
+    bpe_lm = kenlm.Model(args.bpe_lm_path)
     vocab = [chr(idx + 100) for idx in range(len(tokenizer.vocab))]
 
     print(f'Fetching logits for dev set...')
+    temp_name_dev = f'dev_{args.load_tmp}'
+    temp_name_test = f'test_{args.load_tmp}'
+    dev_stage, test_stage = None, None
     if os.path.exists(os.path.join(args.tmp_dir, args.load_tmp)):
-        hyps_with_logits_dev = load_pickle(os.path.join(args.tmp_dir, args.load_tmp))
-    else:
-        hyps_with_logits_dev = get_logits(args, model, corpus_dict['dev'])
-        save_pickle(os.path.join(args.tmp_dir, args.load_tmp), hyps_with_logits_dev)
-    print(f'Lets do some decoding...')
+        dev_stage, dev_hyps = load_pickle(os.path.join(args.tmp_dir, args.load_tmp))
+    
+    if dev_stage == None:
+        dev_hyps = get_logits(args, model, corpus_dict['dev'])
+        save_pickle(os.path.join(args.tmp_dir, args.load_tmp), dev_hyps, stage='logits')
+        dev_stage = 'logits'
+    
+    if dev_stage == 'logits':
+        print(f'performing grid search for pass decoding...')
+        fp_alpha, fp_beta = search_first_pass_alpha_beta_search(args, bpe_lm, vocab, dev_hyps, ids_to_text_func, 100)
+        dev_hyps = first_pass_decode(args, bpe_lm=bpe_lm, vocab=vocab, hyp_data=dev_hyps, beam_width=args.beam_size, alpha=fp_alpha, beta=fp_beta, ids_to_text_func=ids_to_text_func)
+        fpass_wer_dev = eval_beams(dev_hyps)
+        print(f'First pass dev WER: {fpass_wer_dev}')
+        save_pickle(os.path.join(args.tmp_dir, args.load_tmp), dev_hyps, stage='first_pass')
+        dev_stage = 'first_pass'
 
-    fp_alpha, fp_beta = search_first_pass_alpha_beta(args, vocab, hyps_with_logits_dev, ids_to_text_func, 100)
+    if dev_stage == 'first_pass':
+        pass
+
+
 
 
 
@@ -190,10 +241,13 @@ if __name__ == '__main__':
     ''''
     Note I've only written this for a batch size of 1 (lazy)
     '''
-
     parser = argparse.ArgumentParser() 
-    parser.add_argument('-load_tmp', '--load_tmp', default='tmp.pkl', type=str, help='name of logit hyp to load')
+
+
+    parser.add_argument('-load_tmp', '--load_tmp', default='tmp.pkl', type=str, help='base name of logit hyp to load (full name = split+_+name')
     parser.add_argument('-tmp_dir','--tmp_dir', type=str, default='./tmp', help='path to tmp dir')
+
+    parser.add_argument('-log_beta', '--log_beta', action='store_true', help='whether to use log scale for beta length penalty')
 
     parser.add_argument('--load_pretrained', action='store_true')
     parser.add_argument('--pretrained', type=str, default='stt_en_conformer_ctc_small') # stt_en_conformer_ctc_large stt_en_conformer_transducer_large
