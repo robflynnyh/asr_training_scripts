@@ -56,17 +56,18 @@ def get_sub_batches(batch, tokenizer):
     sub_batches = []
     max_len = max(map(len, batch))
     for i in range(max_len):
-        sub_batches.append({'utterances': [],'scores': [],'sb_lengths': [],})
+        sub_batches.append({'utterances': [],'scores': [],'sb_lengths': [], 'durations': []})
         for el in batch:
             case = len(el) > i
             sub_batches[-1]['utterances'].append(el[i][0] if case else -1)
             sub_batches[-1]['scores'].append(el[i][1] if case else -1)
             sub_batches[-1]['sb_lengths'].append(len(el[i][0]) if case else -1)
+            sub_batches[-1]['durations'].append(el[i][2] if case else -1)
      
     non_empty_indices = np.arange(len(sub_batches[0]['sb_lengths']))
 
     for i, sub_batch in enumerate(sub_batches):
-        sb_utts, sb_scores, sb_lengths = [np.array(el, dtype=object) for el in (sub_batch['utterances'], sub_batch['scores'], sub_batch['sb_lengths'])]
+        sb_utts, sb_scores, sb_lengths, sb_durations = [np.array(el, dtype=object) for el in (sub_batch['utterances'], sub_batch['scores'], sub_batch['sb_lengths'], sub_batch['durations'])]
         non_empty = non_empty_indices[sb_lengths != -1]
         # slice based on non empty of previous sub batch
         prev_fetch = None
@@ -80,6 +81,7 @@ def get_sub_batches(batch, tokenizer):
             'utterances': sb_utts,
             'scores': sb_scores,
             'sb_lengths': sb_lengths,
+            'durations': sb_durations,
             'non_empty': non_empty,
             'prev_fetch': prev_fetch 
         }
@@ -90,6 +92,7 @@ def get_sub_batches(batch, tokenizer):
             'utterances': torch.as_tensor(padded_utts),
             'lengths': torch.as_tensor(acc_lengths),
             'scores': torch.tensor(flatten_nested_list((sub_batch['scores'][sub_batch['non_empty']]).tolist())),
+            'durations': torch.tensor(sub_batch['durations'][sub_batch['non_empty']].astype(float)).to(torch.float32),
             'sb_lengths': torch.as_tensor(sub_batch['sb_lengths'][sub_batch['non_empty']].astype(int)),
             'prev_fetch': torch.as_tensor(sub_batch['prev_fetch']) if sub_batch['prev_fetch'].__class__.__name__ != 'NoneType' else None# indices to fetch the states from previous sub batch
         }
@@ -104,6 +107,7 @@ def create_samples_from_recording(recording, num_utterances, num_negatives, max_
         np.random.seed(42) # deterministic selection of negatives
     for i, utterance in enumerate(recording):
         start_t, end_t = utterance['meta_data']['timings'].values()
+        duration = end_t - start_t
         if prev_end is None or (start_t - prev_end) > max_gap:
             samples.append([]) 
         if len(samples[-1]) >= num_utterances:
@@ -116,7 +120,7 @@ def create_samples_from_recording(recording, num_utterances, num_negatives, max_
         examples = [target] + hyps
         
         error_rates = get_edit_distance(examples, target)
-        samples[-1].append((examples, error_rates))
+        samples[-1].append((examples, error_rates, duration))
         prev_end = end_t
 
     return samples
@@ -181,8 +185,10 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
             #print(f'sub_batch {ix+1} / {len(batch)}')
 
             prev_fetch, sb_lengths = sub_batch['prev_fetch'], sub_batch['sb_lengths']
+            durations = sub_batch['durations'][:,None] if args.length_prediction else None
+            
             tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
-     
+    
             if exists(prev_states) and exists(prev_fetch): # prev fetch is a list of indices that are present in the current sub-batch 
                 sb_idxs = torch.arange(sb_lengths.size(0))
                 sb_idxs = torch.cat([sb_idxs[ix].repeat(sb_lengths[ix]) for ix in range(sb_lengths.size(0))]).to(device)
@@ -204,7 +210,7 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
             mask = token_lens_to_mask(token_lens)
             targets = mark_padding(targets, mask, pad_id=-100)
 
-            logits, _, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states)
+            logits, _, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, durations=durations)
             loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
 
             total_lengths += token_lens.sum().item()
@@ -256,10 +262,11 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True) 
 
                 tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
+                durations = sub_batch['durations'][:,None] if args.length_prediction else None
                 prev_fetch, sb_lengths = sub_batch['prev_fetch'], sub_batch['sb_lengths'] # scores are negative for the softmax
                 sb_starts = sb_lengths.cumsum(dim=0) - sb_lengths 
 
-
+           
                 if exists(prev_states) and exists(prev_fetch): # prev fetch is a list of indices that are present in the current sub-batch 
                     sb_idxs = torch.arange(sb_lengths.size(0))
                     sb_idxs = torch.cat([sb_idxs[ix].repeat(sb_lengths[ix]) for ix in range(sb_lengths.size(0))]).to(device)
@@ -281,7 +288,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 mask = token_lens_to_mask(token_lens)
                 targets = mark_padding(targets, mask, pad_id=-100)
 
-                logits, interim_posteriors, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states)
+                logits, interim_posteriors, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, durations=durations)
                 
                 loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
                 
@@ -458,6 +465,8 @@ if __name__ == '__main__':
     parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=10.0, help='max allowed gap between utterances in seconds')
 
     parser.add_argument('-bos_eos', '--bos_eos', action='store_true', help='always use bos and eos tokens')
+    parser.add_argument('-length_pred','--length_prediction', action='store_true', help='use length prediction')
+
     parser.add_argument('--shift_states', action='store_true', help='shift states upwards for enhanced reccurence https://arxiv.org/abs/2012.15688')
 
     parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml', required=True)
@@ -476,6 +485,8 @@ if __name__ == '__main__':
 
     args.device = 'cuda' if torch.cuda.is_available() else 'cpu' if args.device == 'auto' else args.device 
 
+    if args.length_prediction:
+        assert args.bos_eos, 'bos eos must be used if length prediction is used'
 
     if args.checkpoint != '':
         args.checkpoint = os.path.join(args.checkpoint_dir, args.checkpoint)

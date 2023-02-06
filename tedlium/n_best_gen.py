@@ -25,20 +25,8 @@ import pickle as pkl
 from tools import isfalse, istrue, exists, save_json
 from nemo.collections.asr.metrics.wer import word_error_rate
 
-from collections import OrderedDict
 
-
-
-def enable_dropout(model, dropout_rate=0.0):
-    if dropout_rate == 0.0:
-        return model
-    for m in model.modules():
-        if m.__class__.__name__.startswith('Dropout'):
-            m.train()
-            m.p = dropout_rate
-            m.inplace = True
-            print(f'Enabled dropout with rate {dropout_rate} in {m.__class__.__name__}')
-    return model
+DEFAULT_UNK_LOGP_OFFSET = -4.342944819032518
 
 @torch.no_grad()
 def get_logits(args, model, corpus):
@@ -100,7 +88,7 @@ def first_pass_decode(args, bpe_lm, vocab, hyp_data, beam_width, alpha, beta, id
         beta=beta,
         lm_path=args.bpe_lm_path,
         input_tensor=False,
-        num_cpus=max(os.cpu_count(), 1),
+        num_cpus=max(os.cpu_count() // 2, 1),
     )
     probs = [el['probs'] for el in hyp_data]
 
@@ -125,6 +113,7 @@ def first_pass_decode(args, bpe_lm, vocab, hyp_data, beam_width, alpha, beta, id
                 'first_pass_score': cand[0],
                 'am_score': am_score,
                 'bpe_lm_score': bpe_lm_score,
+                'first_pass_length_penalty': first_pass_length_pen,
             }
         new_hyp_data.append({
             'meta_data': hyp['meta_data'],
@@ -136,7 +125,21 @@ def first_pass_decode(args, bpe_lm, vocab, hyp_data, beam_width, alpha, beta, id
     return new_hyp_data
 
 
-def second_pass_rescore(args, ngram_lm, hyp_data, alpha, beta):
+def reorder_beams(hyp_data, key):
+    '''reorders beams so that the best scoring beam is first using the value at key'''
+    for hyp in hyp_data:
+        hyp['beams'] = [{i:el[1] for i, el in enumerate(sorted(hyp['beams'][0].items(), key=lambda x: x[1][key], reverse=True))}]
+
+    return hyp_data
+
+def score_text_ngram(ngram, text, unk_offset):
+    ngram_lm_score = list(ngram.full_scores(text, bos=False, eos=False))
+    non_oov_score = sum([el[0] for el in ngram_lm_score if el[-1] == False])
+    oov_score = sum([1 for el in ngram_lm_score if el[-1] == True])
+    return non_oov_score, oov_score
+
+
+def second_pass_rescore(args, ngram_lm, hyp_data, fp_alpha, sp_alpha, beta, unk_offset):
     for hypothesis in hyp_data:
         beams = hypothesis['beams'][0]
         for beam_idx in beams.keys():
@@ -144,16 +147,21 @@ def second_pass_rescore(args, ngram_lm, hyp_data, alpha, beta):
             text = beam['text']
             text_len = len(text.split())
             length_pen = beta * text_len if not args.log_beta else beta * np.log(text_len)
-            ngram_lm_score = ngram_lm.score(text, bos=False, eos=False)
+            if 'ngram_lm_score_non_oov' not in beam or 'ngram_oov_count' not in beam:
+                ngram_lm_score_non_oov, oov_score = score_text_ngram(ngram_lm, text, unk_offset)
+                beam['ngram_lm_score_non_oov'] = ngram_lm_score_non_oov
+                beam['ngram_oov_count'] = oov_score
+            else:
+                ngram_lm_score_non_oov, oov_score = beam['ngram_lm_score_non_oov'], beam['ngram_oov_count']
+            ngram_lm_score = ngram_lm_score_non_oov + oov_score * unk_offset
             beam['ngram_lm_score'] = ngram_lm_score
-            beam['second_pass_score'] = beam['am_score'] + alpha * ngram_lm_score + length_pen
-    return hyp_data
+            am_score = beam['am_score']
+            fpass_lm_score = beam['bpe_lm_score']
+            fpass_length_pen = beam['first_pass_length_penalty']
+            beam['second_pass_length_penalty'] = length_pen
+            beam['second_pass_score'] = am_score + sp_alpha * ngram_lm_score + length_pen + fp_alpha * fpass_lm_score + fpass_length_pen
+    return reorder_beams(hyp_data, 'second_pass_score')
             
-def reorder_beams(hyp_data, key):
-    '''reorders beams so that the best scoring beam is first using the value at key'''
-    for hyp in hyp_data:
-        hyp['beams'][0] = OrderedDict(sorted(hyp['beams'][0].items(), key=lambda x: x[1][key]))
-    return hyp_data
 
 def eval_beams(hyp_data):
     hyps, refs = [], []
@@ -170,15 +178,21 @@ def load_pickle(path):
 
 def save_pickle(path, obj, stage='logits'):
     with open(path, 'wb') as f:
-        pkl.dump({'stage':stage, 'data':obj}, f)
+        pkl.dump({'stage':stage, 'data':obj}, f) if stage != 'finished' else pkl.dump(obj, f)
 
 def delete_pickle(path):
     os.remove(path)
 
 def search_first_pass_alpha_beta_search(args, bpe_lm, vocab, hyp_data, ids_to_text_func, beam_width):
     results = []
-    for alpha in [0.8, 0.9, 1.0, 1.1, 1.2]:
-        for beta in [0.1, 0.2, 0.3]:
+    alpha_set = [0.9, 1.0, 1.1, 1.2, 1.3, 1.4]
+    beta_set = [0.1, 0.2, 0.3, 0.4, 0.5]
+    total = len(alpha_set) * len(beta_set)
+    current_step = 0
+    for alpha in alpha_set:
+        for beta in beta_set:
+            current_step += 1
+            print(f'[{current_step}/{total}]')  
             print(f'alpha: {alpha}, beta: {beta}')
             new_hyp_data = first_pass_decode(args, bpe_lm, vocab, hyp_data, beam_width, alpha, beta, ids_to_text_func)
             wer = eval_beams(new_hyp_data)
@@ -193,7 +207,30 @@ def search_first_pass_alpha_beta_search(args, bpe_lm, vocab, hyp_data, ids_to_te
     print(f'Best alpha: {best["alpha"]}, beta: {best["beta"]}, wer: {best["wer"]}')
     return alpha, beta
 
-#def second_pass_alpha_beta_seach()
+def second_pass_alpha_beta_seach(args, ngram_lm, hyp_data):
+    results = []
+    unk_offsets = np.linspace(np.log10(np.exp(-10)), np.log10(np.exp(-10))*4, 6).tolist()
+    for sp_alpha in [0.3, 0.4, 0.5, 0.6]:
+        for beta in [0.0, 0.5, 0.6, 0.7]:
+            for fp_alpha in [0.8, 0.9, 1.0, 1.1, 1.2]:
+                for unk_offset in [-5.5, -8, -10, -14, -16, -18, -20]:
+                    print(f'fp_alpha: {fp_alpha}, beta: {beta}, sp_alpha: {sp_alpha}, unk_offset: {unk_offset}')
+                    hyp_data = second_pass_rescore(args, ngram_lm, hyp_data, fp_alpha, sp_alpha, beta, unk_offset)
+        
+                    wer = eval_beams(hyp_data=hyp_data)
+                    print(f'wer: {wer}')
+                    results.append({
+                        'fp_alpha': fp_alpha,
+                        'sp_alpha': sp_alpha,
+                        'unk_offset': unk_offset,
+                        'beta': beta,
+                        'wer': wer,
+                    })
+    # get best
+    best = sorted(results, key=lambda x: x['wer'])[0]
+    print(f'Best fp_alpha: {best["fp_alpha"]}, beta: {best["beta"]}, sp_alpha: {best["sp_alpha"]}, unk_offset: {best["unk_offset"]}, wer: {best["wer"]}')
+    final_hyp_data = second_pass_rescore(args, ngram_lm, hyp_data, best['fp_alpha'], best['sp_alpha'], best['beta'], best['unk_offset'])
+    return best['fp_alpha'], best['sp_alpha'], best['beta'], best['unk_offset'], best['wer'], final_hyp_data
 
 def main(args):
     model = load_model(args) if args.self_conditioned == False else load_sc_model(args)
@@ -205,34 +242,65 @@ def main(args):
     tokenizer = tools.load_tokenizer(args.tokenizer_model)
     ids_to_text_func = tokenizer.ids_to_text
     bpe_lm = kenlm.Model(args.bpe_lm_path)
+    ngram_lm = kenlm.Model(args.language_model)
     vocab = [chr(idx + 100) for idx in range(len(tokenizer.vocab))]
 
-    print(f'Fetching logits for dev set...')
+    
     temp_name_dev = f'dev_{args.load_tmp}'
     temp_name_test = f'test_{args.load_tmp}'
-    dev_stage, test_stage = None, None
-    if os.path.exists(os.path.join(args.tmp_dir, args.load_tmp)):
-        dev_stage, dev_hyps = load_pickle(os.path.join(args.tmp_dir, args.load_tmp))
+    dev_stage, test_stage = None, None # stage corresponds to the last step of the pipeline that was completed
+
+    if os.path.exists(os.path.join(args.tmp_dir, temp_name_dev)):
+        dev_stage, dev_hyps = load_pickle(os.path.join(args.tmp_dir, temp_name_dev))
     
     if dev_stage == None:
+        print(f'Fetching logits for dev set...')
         dev_hyps = get_logits(args, model, corpus_dict['dev'])
-        save_pickle(os.path.join(args.tmp_dir, args.load_tmp), dev_hyps, stage='logits')
+        save_pickle(os.path.join(args.tmp_dir, temp_name_dev), dev_hyps, stage='logits')
         dev_stage = 'logits'
     
-    if dev_stage == 'logits':
-        print(f'performing grid search for pass decoding...')
-        fp_alpha, fp_beta = search_first_pass_alpha_beta_search(args, bpe_lm, vocab, dev_hyps, ids_to_text_func, 100)
-        dev_hyps = first_pass_decode(args, bpe_lm=bpe_lm, vocab=vocab, hyp_data=dev_hyps, beam_width=args.beam_size, alpha=fp_alpha, beta=fp_beta, ids_to_text_func=ids_to_text_func)
-        fpass_wer_dev = eval_beams(dev_hyps)
-        print(f'First pass dev WER: {fpass_wer_dev}')
-        save_pickle(os.path.join(args.tmp_dir, args.load_tmp), dev_hyps, stage='first_pass')
-        dev_stage = 'first_pass'
 
-    if dev_stage == 'first_pass':
-        pass
+    print(f'performing grid search for pass decoding...')
+    fp_alpha, fp_beta = search_first_pass_alpha_beta_search(args, bpe_lm, vocab, dev_hyps, ids_to_text_func, 15)
+    dev_hyps = first_pass_decode(args, bpe_lm=bpe_lm, vocab=vocab, hyp_data=dev_hyps, beam_width=args.beam_size, alpha=fp_alpha, beta=fp_beta, ids_to_text_func=ids_to_text_func)
+    fpass_wer_dev = eval_beams(dev_hyps)
+    print(f'First pass dev WER: {fpass_wer_dev}')
+    #save_pickle(os.path.join(args.tmp_dir, temp_name_dev), dev_hyps, stage='first_pass')
+    #dev_stage = 'first_pass'
+
+    #assert dev_stage == 'first_pass', 'dev stage should be first pass at this point - something went wrong - please delete dev tmp file and try again (sorry)'
+    print(f'Performing grid search for second pass decoding...')
+    fp_alpha_weight, sp_alpha, sp_beta, unk_offset, dev_wer, dev_hyps = second_pass_alpha_beta_seach(args, ngram_lm, dev_hyps)
+    save_pickle(os.path.join(args.tmp_dir, temp_name_dev), dev_hyps, stage='finished')
+    print(f'--- Finished dev set -------')
+    del dev_hyps # free up memory
+
+    '''if os.path.exists(os.path.join(args.tmp_dir, temp_name_test)):
+        test_stage, test_hyps = load_pickle(os.path.join(args.tmp_dir, temp_name_test))
+
+    if test_stage == None:
+        print(f'Fetching logits for test set...')
+        test_hyps = get_logits(args, model, corpus_dict['test'])
+        save_pickle(os.path.join(args.tmp_dir, temp_name_test), test_hyps, stage='logits')
+        test_stage = 'logits'
 
 
+    test_hyps = first_pass_decode(args, bpe_lm=bpe_lm, vocab=vocab, hyp_data=dev_hyps, beam_width=args.beam_size, alpha=fp_alpha, beta=fp_beta, ids_to_text_func=ids_to_text_func)
+    fpass_wer_test = eval_beams(dev_hyps)
+    print(f'First pass dev WER: {fpass_wer_test}')
 
+    test_hyps = second_pass_rescore(args, ngram_lm, test_hyps, sp_beta, sp_alpha)
+    test_wer = eval_beams(hyp_data=test_hyps)
+    save_pickle(os.path.join(args.tmp_dir, temp_name_test), test_hyps, stage='Finished')
+    print('FINISHED')
+    print(f'first pass alpha: {fp_alpha}, beta: {fp_beta}, second pass alpha: {sp_alpha}, beta: {sp_beta}')
+    print(f'Dev WER: {dev_wer}, Test WER: {test_wer}')
+    print('GOODBYE')'''
+    
+    
+
+
+#Best fp_alpha: 0.9, beta: 0.7, sp_alpha: 0.6, unk_offset: -18, wer: 0.09889438302127895 (beam 1000)
 
 
 
@@ -265,7 +333,7 @@ if __name__ == '__main__':
     parser.add_argument('--beam_size', type=int, default=1000)
     parser.add_argument('--bpe_lm_path', type=str, default='./ngrams/binary_bpe/kenlmbpe6.lm.bin')
 
-    parser.add_argument('-lm', '--language_model', type=str, default='', help='arpa n-gram model for decoding')#./ngrams/3gram-6mix.arpa
+    parser.add_argument('-lm', '--language_model', type=str, default='./ngrams/cantab_interp_tedlium.arpa', help='arpa n-gram model for decoding')#./ngrams/3gram-6mix.arpa
     parser.add_argument('--split', type=str, default='test')
     parser.add_argument('--alpha', type=float, default=0.5)
     parser.add_argument('--beta', type=float, default=0.8)
@@ -291,6 +359,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    assert args.language_model != '' and args.bpe_lm_path != '', 'Must provide a language model and a bpe language model'
 
     args.do_not_pass_segment_lens = not args.pass_segment_lengths
     args.self_conditioned = not args.not_self_conditioned
@@ -298,11 +367,11 @@ if __name__ == '__main__':
     args.config_from_checkpoint_dir = True
     
 
-    if args.save_outputs == '':
+    '''if args.save_outputs == '':
         save_outputs = ''
         while save_outputs == '':
             save_outputs = input('Please provide a name for the output file: ').strip()
-        args.save_outputs = save_outputs
+        args.save_outputs = save_outputs'''
 
     if os.path.exists(args.tmp_dir) == False:
         os.mkdir(args.tmp_dir)

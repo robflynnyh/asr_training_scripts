@@ -4,7 +4,16 @@ from einops import rearrange, repeat
 from tqdm import tqdm
 import torch.nn as nn
 from .DEFAULTS import get_model_defaults
+from speachy.lm import addons
 
+def fetch_addons(model_config):
+    add_on_modules = {}
+    add_ons = model_config.get('add_ons', {})
+    for add_on_module in add_ons.keys():
+        if add_on_module == 'length_predictor':
+            add_on_modules[add_on_module] = addons.LengthPredictor(dim=add_ons[add_on_module].get('dim', 256))
+        
+    return add_on_modules
 
 def load_qknorm_transformer(config:OmegaConf, tokenizer, **kwargs):
     from speachy.lm.models.qknorm_attention import transformer_lm
@@ -17,14 +26,17 @@ def load_qknorm_transformer(config:OmegaConf, tokenizer, **kwargs):
         heads = config.get('n_heads', 8),
         dim_head = config.get('dim_head', 32),
         causal = config.get('causal', True),
-        temperature= config.get('temperature', 15.5),
+        temperature = config.get('temperature', 15.5),
         intermediate_loss = config.get('intermediate_loss', True),
         self_conditioning = config.get('self_conditioning', False),
         dropout = config.get('dropout', 0.1),
         **config_kwargs
     )
-    return transformer
+    add_ons = fetch_addons(config)
+    for add_on in add_ons.keys():
+        setattr(transformer, add_on, add_ons[add_on]) # add the add-ons to the transformer
 
+    return transformer
 
 def autoload(config:OmegaConf, tokenizer, **kwargs):
     assert 'model' in config
