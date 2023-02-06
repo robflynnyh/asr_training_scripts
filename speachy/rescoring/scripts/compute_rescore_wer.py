@@ -25,7 +25,7 @@ def get_rescore_wer(hypothesis):
     first_p_hyps = []
     for key in hypothesis.keys():
         recording = hypothesis[key]
-        for utt in tqdm(recording):
+        for utt in recording:
             first_p_hyp = utt['beams'][0][0]['text']
             best_hyp = utt['best_hyp']
  
@@ -36,13 +36,13 @@ def get_rescore_wer(hypothesis):
     return word_error_rate(hyps, refs), word_error_rate(first_p_hyps, refs)
 
 
-def main(hypothesis):
+def main(hypothesis, verbose=True):
     if hypothesis.__class__.__name__ != 'dict':
         hypothesis = sort_hypothesis_by_recording(hypothesis)
         hypothesis = order_recordings_by_start_time(hypothesis)
         
     wer, prev_wer = get_rescore_wer(hypothesis)
-    print(f"Rescored WER: {wer}, First Pass WER: {prev_wer}")
+    print(f"Rescored WER: {wer}, First Pass WER: {prev_wer}") if verbose else None
     return wer
 
 if __name__ == '__main__':

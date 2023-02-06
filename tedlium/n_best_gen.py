@@ -26,7 +26,6 @@ from tools import isfalse, istrue, exists, save_json
 from nemo.collections.asr.metrics.wer import word_error_rate
 
 
-DEFAULT_UNK_LOGP_OFFSET = -4.342944819032518
 
 @torch.no_grad()
 def get_logits(args, model, corpus):

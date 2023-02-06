@@ -17,7 +17,7 @@ python train_LM.py --checkpoint 'pg_19_pretrained_c_62_id_87.pt' \
     --schedular_data './pg191kwftpd90.json' \
     -no_eos \
     --project_name 'FINETUNE-PG19-INTERSPEECH' \
-    --label_smoothing 0.0 \
+    --label_smoothing 0.05 \
     
 
 

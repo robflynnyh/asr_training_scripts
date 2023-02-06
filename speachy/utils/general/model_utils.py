@@ -12,6 +12,8 @@ def load_config(config:str):
     return OmegaConf.load(config)
 
 def write_to_log(log_file, data):
+    if log_file is None or log_file == '':
+        return
     with open(log_file, 'a') as f:
         f.write(data)
         f.write('\n')

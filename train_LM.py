@@ -63,7 +63,7 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
 
         logits, _, _ = model(x=tokens, length=token_lens, cache=None)
 
-        loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
+        loss = loss_ce(logits=logits, labels=targets, ignore_index=-100, label_smoothing=args.label_smoothing)
         losses.append(loss.item())
 
         if sanity_check:
