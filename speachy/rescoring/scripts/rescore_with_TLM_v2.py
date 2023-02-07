@@ -24,7 +24,7 @@ from speachy.utils.misc import write_trn_files, eval_with_sclite
 from speachy.utils.helpers import request_env, isfalse, istrue, exists
 
 from speachy.lm.tools.train import add_bos as add_bos_token
-
+import time
 
 from speachy.utils.general import (
     load_config,
@@ -41,7 +41,7 @@ class argsclass:
 @torch.no_grad()
 def get_text_probability(args, model, tokenizer, text, cached_states=None, next_target=None, first_token=None, duration_data=None):
     def calc_length_penalty(lp_length):
-        return torch.tensor(lp_length).float().log().item()
+        return torch.tensor(lp_length).float().item()
 
     device = torch.device(args.device)
     tokens = tokenizer.text_to_ids(text)
@@ -289,8 +289,8 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps, hyperparameters=No
                     tokenizer, 
                     hyptext, 
                     cached_states=kv_cache, 
-                    next_target=None, # 
-                    first_token=None, # 
+                    next_target=None, # remove
+                    first_token=None, # remove
                     duration_data=duration_data
                 )
 
@@ -353,95 +353,43 @@ def get_standardisation_stats(hypothesis):
     print(f'TLM mean: {tlm_mean}, TLM std: {tlm_std}')
     return {'tlm_mean': tlm_mean, 'tlm_std': tlm_std}
 
-#
-def run_grid_search(args, model, tokenizer, hypothesis):
-    print(f'Running grid search...')
-    use_targets = args.use_targets
-    stop_at_beam = args.stop_at_beam
-    args.use_targets = True # use targets to get initial standardisation stats
-    args.stop_at_beam = 100 # only use top 100 beams to get stats
-    if not args.use_cached_scores:
-        print(f'Evaluating to get hypothesis... using top {args.stop_at_beam} beams and targets as history')
-        scored_hypothesis = compute_lm_ppls(args, model, tokenizer, hypothesis)
-    else:
-        scored_hypothesis = hypothesis
-    args.stop_at_beam = stop_at_beam
-    args.use_targets = use_targets
-    standardisation_stats = get_standardisation_stats(scored_hypothesis)
-    write_to_log(log_file=args.log_path, data=f'TLM mean: {standardisation_stats["tlm_mean"]}, TLM std: {standardisation_stats["tlm_std"]}')
-    args.tlm_mean = standardisation_stats['tlm_mean']
-    args.tlm_std = standardisation_stats['tlm_std']
-    
-    bpe_lm_weights = [0.3, 0.5, 0.7, 0.8]
-    tlm_scales = [25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0, 70.0, 75.0]
-    ngram_scales = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-    length_penalties = [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5]
-    bpe_length_penalty_weights = [0.3, 0.5, 0.7, 0.8, 1.0]
-    total_combinations = len(bpe_lm_weights) * len(tlm_scales) * len(ngram_scales) * len(length_penalties) * len(bpe_length_penalty_weights) # 0:
-    print(f'Running grid search, with {total_combinations} combinations')
-    progress = tqdm(total=total_combinations)
-    scores_v_params = []
-    lowest_wer = 1.0
-    for bpe_lm_weight in bpe_lm_weights:
-        for tlm_scale in tlm_scales:
-            for ngram_scale in ngram_scales:
-                for length_penalty in length_penalties:
-                    for bpe_length_penalty_weight in bpe_length_penalty_weights:
-                        #print(f'Running grid search with params: bpe_lm_weight: {bpe_lm_weight}, tlm_scale: {tlm_scale}, ngram_scale: {ngram_scale}, length_penalty: {length_penalty}, bpe_length_penalty_weight: {bpe_length_penalty_weight}')
-                        hyperparameters = {
-                            'tlm_mean': torch.tensor(args.tlm_mean),
-                            'tlm_std': torch.tensor(args.tlm_std),
-                            'bpe_lm_weight': torch.tensor(bpe_lm_weight),
-                            'tlm_scale': torch.tensor(tlm_scale),
-                            'ngram_scale': torch.tensor(ngram_scale),
-                            'bpe_length_penalty_weight': torch.tensor(bpe_length_penalty_weight),
-                            'length_penalty': torch.tensor(length_penalty),
-                        }
-                        hyp = rescore_speakers(
-                            args=args,
-                            hypothesis=scored_hypothesis,
-                            hyperparmeters=hyperparameters,
-                        )
-                        score = compute_rescore_wer(hyp, verbose=False)
-                        scores_v_params.append((score, hyperparameters))
-                        if score < lowest_wer:
-                            lowest_wer = score
-                            print(f'Lowest WER: {score} with params: bpe_lm_weight: {bpe_lm_weight}, tlm_scale: {tlm_scale}, ngram_scale: {ngram_scale}, length_penalty: {length_penalty}, bpe_length_penalty_weight: {bpe_length_penalty_weight}')
-                        progress.update(1)
-    scores_v_params = sorted(scores_v_params, key=lambda x: x[0])
-    print(f'Best params: {scores_v_params[0][1]}')
-    print(f'Best wer: {scores_v_params[0][0]}')
-    return scores_v_params[0][1]
+
+
+def save_hyp(args, hyp):
+    if args.saveas != '':
+        with open(args.saveas, 'wb') as f:
+            pkl.dump(hyp, f)
+    print(f'Saved hypothesis to {args.saveas}')
 
 def run_random_search(args, model, tokenizer, hypothesis):
     print(f'Running grid search...')
-    use_targets = args.use_targets
     stop_at_beam = args.stop_at_beam
     args.use_targets = True # use targets to get initial standardisation stats
     args.stop_at_beam = 100 # only use top 100 beams to get stats
     if not args.use_cached_scores:
-        print(f'Evaluating to get hypothesis... using top {args.stop_at_beam} beams and targets as history')
+        print(f'Evaluating to get hypothesis... using top {args.stop_at_beam} beams ')
         scored_hypothesis = compute_lm_ppls(args, model, tokenizer, hypothesis)
+        save_hyp(args, scored_hypothesis)
     else:
         scored_hypothesis = hypothesis
     args.stop_at_beam = stop_at_beam
-    args.use_targets = use_targets
     standardisation_stats = get_standardisation_stats(scored_hypothesis)
     write_to_log(log_file=args.log_path, data=f'TLM mean: {standardisation_stats["tlm_mean"]}, TLM std: {standardisation_stats["tlm_std"]}')
     args.tlm_mean = standardisation_stats['tlm_mean']
     args.tlm_std = standardisation_stats['tlm_std']
     
-    bpe_lm_weights_range = [0.10, 0.45]
-    tlm_scales = [25.0, 70.0]
-    ngram_scales = [0.2, 1.0]
-    length_penalties = [-1.5, 3.0]
-    bpe_length_penalty_weights = [0.25, 1.5]
+    bpe_lm_weights_range = [-0.35, 0.6]
+    tlm_scales = [25.0, 60.0]
+    ngram_scales = [0.0, 1.25]
+    length_penalties = [-0.1, 3.0]
+    bpe_length_penalty_weights = [-0.1, 2.5]
     print(f'Running Random search')
    
     scores_v_params = []
     lowest_wer = 1.0
+    start_time = time.time()
     try:
-        while True:
+        while (time.time() - start_time) < args.random_search_time:
             bpe_lm_weight = random.uniform(bpe_lm_weights_range[0], bpe_lm_weights_range[1])
             tlm_scale = random.uniform(tlm_scales[0], tlm_scales[1])
             ngram_scale = random.uniform(ngram_scales[0], ngram_scales[1])
@@ -468,6 +416,7 @@ def run_random_search(args, model, tokenizer, hypothesis):
             if score < lowest_wer:
                 lowest_wer = score
                 print(f'Lowest WER: {score} with params: bpe_lm_weight: {bpe_lm_weight}, tlm_scale: {tlm_scale}, ngram_scale: {ngram_scale}, length_penalty: {length_penalty}, bpe_length_penalty_weight: {bpe_length_penalty_weight}')
+
     except KeyboardInterrupt:
         print('Keyboard interrupt, stopping search')
     scores_v_params = sorted(scores_v_params, key=lambda x: x[0])
@@ -499,17 +448,22 @@ def main(args, hypothesis):
         hypothesis = order_recordings_by_start_time(hypothesis)
 
     hyperparameters = get_hyperparameters(args=args)
-    if args.run_grid_search or args.run_random_search:
-        hyperparameters = run_grid_search(args, model, tokenizer, hypothesis) if args.run_grid_search else run_random_search(args, model, tokenizer, hypothesis)
+    if args.run_random_search:
+        hyperparameters = run_random_search(args, model, tokenizer, hypothesis)
       
     elif args.use_cached_scores == False:
         hypothesis = compute_lm_ppls(args, model, tokenizer, hypothesis, hyperparameters=hyperparameters)
+    standardise_stats = get_standardisation_stats(hypothesis=hypothesis)
+    hyperparameters['tlm_mean'] = torch.tensor(standardise_stats['tlm_mean'])
+    hyperparameters['tlm_std'] = torch.tensor(standardise_stats['tlm_std'])
  
     hypothesis = rescore_speakers(args, hypothesis, hyperparmeters=hyperparameters)
 
     wer = compute_rescore_wer(hypothesis)
   
     print(f'WER: {wer}')
+
+    save_hyp(args, hypothesis)
 
 
     if args.eval_with_sclite != '':
@@ -544,17 +498,19 @@ if __name__ == '__main__':
     parser.add_argument('-save','--saveas', type=str, default='')
 
     parser.add_argument('-use_targets','--use_targets', action='store_true', help='whether to use targets as history')
-    parser.add_argument('-grid_search', '--run_grid_search', action='store_true', help='whether to run grid search')
+
     parser.add_argument('-random_search', '--run_random_search', action='store_true', help='whether to run random search')
     # hyperparameters for rescore
-    parser.add_argument('-bpe_lm_weight','--bpe_lm_weight', type=float, default=0.36)
-    parser.add_argument('-bpe_len_pen', '--bpe_length_penalty_weight', type=float, default=0.65)
-    parser.add_argument('-ngram_scale', '--ngram_scale', type=float, default=0.55) # linearly scale AM logp by this factor')
-    parser.add_argument('-length_penalty','--length_penalty', type=float, default=1.56) 
-    parser.add_argument('-tlm_scale','--tlm_scale', type=float, default=34.5) # linearly scale TLM logp by this factor
-    parser.add_argument('-tlm_mean','--tlm_mean', type=float, default=-172.0) # mean of TLM logp
-    parser.add_argument('-tlm_std','--tlm_std', type=float, default=104.0) # std of TLM logp
+    parser.add_argument('-bpe_lm_weight','--bpe_lm_weight', type=float, default=0.0841)
+    parser.add_argument('-bpe_len_pen', '--bpe_length_penalty_weight', type=float, default=2.2083)
+    parser.add_argument('-ngram_scale', '--ngram_scale', type=float, default=0.5565) # linearly scale AM logp by this factor')
+    parser.add_argument('-length_penalty','--length_penalty', type=float, default=-0.3103) 
+    parser.add_argument('-tlm_scale','--tlm_scale', type=float, default=42.5728) # linearly scale TLM logp by this factor
+    parser.add_argument('-tlm_mean','--tlm_mean', type=float, default=-168.37120056152344,) # mean of TLM logp
+    parser.add_argument('-tlm_std','--tlm_std', type=float, default=105.40515899658203) # std of TLM logp
     # hyperparameters for rescore
+
+    parser.add_argument('-random_search_time', '--random_search_time', type=float, default=1000) # time limit for random search
 
     parser.add_argument('--temperature', type=float, default=0.85) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
     parser.add_argument('-history','--max_history_len', type=int, default=-1)
