@@ -1,19 +1,19 @@
 echo '<<< TRAINING SMALL SC-CTC MODEL >>>'
 
-python train_H.py --checkpoint '' \
+python train_H.py --checkpoint 'checkpoint_14_id_74.pt' \
     --checkpoint_dir './checkpoints' \
     --model_config '../model_configs/conformer_sc_ctc_bpe_small.yaml' \
     --min_lr 1e-6 \
-    --max_lr 1e-4 \
-    --step_size 150 \
+    --max_lr 1.0e-4 \
+    --step_size 350 \
     --accumulate_gradients 1 \
     --clip_gradients \
-    --clip_gradients_value 10 \
+    --clip_gradients_value 12 \
     --micro_batch_duration 0 \
-    --micro_batch_number 35 \
+    --micro_batch_number 30 \
     --schedular_data 'sc-ctc_ami_baseline_scheduler.json' \
     --do_not_pass_segment_lens \
-    --wandb_id '' 
+    --wandb_id '3vhx43y2' 
     #--wandb_project 'PROJECT_NAME_GOES_HERW' \
     
 
