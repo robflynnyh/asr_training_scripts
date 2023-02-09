@@ -375,7 +375,7 @@ def main(args):
     validate_one_epoch(
         args,
         model = model,
-        val_dataloader = Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False, split_into_splits=10),
+        val_dataloader = Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False, split_into_splits=15),
         device = device,
         sanity_check = True
     )
@@ -385,7 +385,7 @@ def main(args):
         'num_utterances': args.utts_per_sample,
         'shuffle': True,
     }
-    train_sampler = Sampler(create_dataset_samples(**train_sample_args), batch_size=args.batch_size, tokenizer=tokenizer, shuffle=True, split_into_splits=150)
+    train_sampler = Sampler(create_dataset_samples(**train_sample_args), batch_size=args.batch_size, tokenizer=tokenizer, shuffle=True, split_into_splits=50)
 
     ema = ExponentialMovingAverage(model.parameters(), decay=0.99999) 
     scaler = GradScaler() if args.mixed_precision else None
