@@ -65,6 +65,8 @@ def validate_one_epoch(model, val_dataloader, device, sanity_check=False):
     losses = []
     print('Evaluation epoch')
     for batch in pbar:
+        if batch['tokens'].shape[-1] == 0: # edge case
+            continue
         input_signal, input_signal_lengths, targets, target_lengths, batch_size = squeeze_batch_and_to_device(batch, device)
         segment_lens = batch['segment_lens'].to(device)
         #pbar.update(batch_size)
@@ -125,6 +127,8 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
     #torch.autograd.set_detect_anomaly(True)
 
     for i, batch in enumerate(pbar):
+        if batch['tokens'].shape[-1] == 0: # edge case
+            continue
         input_signal, input_signal_lengths, targets, target_lengths, batch_size = squeeze_batch_and_to_device(batch, device)
         segment_lens = batch['segment_lens'].to(device)
 

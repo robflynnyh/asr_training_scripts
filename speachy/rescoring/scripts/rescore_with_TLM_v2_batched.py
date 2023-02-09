@@ -52,6 +52,10 @@ def get_text_batched_probability(args, model, tokenizer, batched_text, cached_st
     max_len = max(token_lens)
     tokens = [token + [0] * (max_len - len(token)) for token in tokens]
     tokens = torch.tensor(tokens).long().to(device)
+
+    if tokens.shape[-1] == 0: 
+        return torch.tensor([torch.nan]), cached_states
+
     token_lens = torch.tensor(token_lens).long().to(device)
     add_bos = not exists(cached_states) or args.eosbos
     tokens = add_bos_token(tokens, bos_token_id=0) if add_bos else tokens # don't add bos if we're starting from a cached state (bos is already there)
@@ -59,22 +63,38 @@ def get_text_batched_probability(args, model, tokenizer, batched_text, cached_st
 
     targets = tokens.clone()
     targets[:, :-1] = tokens[:, 1:] # shift targets by 1
+
+
     targets = add_eos_token(targets, eos_id=0 if args.eosbos else -100, token_lens=token_lens) # pad targets if no eos 
     mask = token_lens_to_mask(token_lens)
     targets = mark_padding(targets, mask, pad_id=-100)
     items_in_batch = tokens.shape[0]
     if exists(cached_states):
-        cached_states['cache'] = cached_states['cache'].expand(-1, -1, items_in_batch, -1, -1, -1).to(device) # (n_layers, (k,v), batch, n_heads, seq_len, h_dim)
-        cached_states['cache_lengths'] = cached_states['cache_lengths'].expand(items_in_batch).to(device)
+        cached_states['cache'] = cached_states['cache'][:, :, 0, None].to(device) # (n_layers, (k,v), batch, n_heads, seq_len, h_dim)
+        cached_states['cache'] = cached_states['cache'].expand(-1, -1, items_in_batch, -1, -1, -1).clone().contiguous()
+
+        cached_states['cache_lengths'] = cached_states['cache_lengths'][0,None].to(device)
+        cached_states['cache_lengths'] = cached_states['cache_lengths'].expand(items_in_batch).clone().contiguous()
+   
     logits, _, cached_states = model(x=tokens, length=token_lens, cache=cached_states, durations=duration_data)
- 
+
+    '''toadd = 1 if add_bos else 0
+    logits = logits[:, toadd:, :] 
+    targets = targets[:, toadd:] # 
+    
+    if not args.eosbos:
+        logits = logits[:, :, 1:] # remove eos/bos from probabilities
+        targets -= 1 # shift targets by 1 (no more eos/bos)
+        targets[targets == -101] = -100 # remove padding from targets'''
 
     # get log probabilities
     logits = logits / args.temperature
     logprobs = -loss_ce(logits, targets, ignore_index=-100, reduction='none')
+    '''print(token_lens.max()-token_lens)
+    print(logprobs)'''
     logprobs = logprobs.sum(dim=-1)
 
-    return logprobs.to('cpu'), {k: v.to('cpu') for k, v in cached_states.items()}
+    return logprobs.to('cpu'), cached_states #{k: v.to('cpu') for k, v in cached_states.items()}
 
 @torch.no_grad()
 def get_text_probability___(args, model, tokenizer, text, cached_states=None, duration_data=None):
@@ -273,6 +293,7 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps, hyperparameters=No
 
 
     for i, utt in enumerate(tqdm(recording_hyps)):
+      
         kv_cache = {'cache': kvs_to_cache['cache'].clone(), 'cache_lengths': kvs_to_cache['cache_lengths'].clone()} if kvs_to_cache is not None else None 
 
         segment_start, segment_end = utt['meta_data']['timings'].values()
@@ -293,7 +314,7 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps, hyperparameters=No
             kvs_to_cache = {'cache': cache['cache'].clone(), 'cache_lengths': cache['cache_lengths'].clone()}  #debug thing'''''
 
         has_stats = exists(hyperparameters)
-        cached_states = [] 
+        
 
         batch_stack = []
 
@@ -311,6 +332,7 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps, hyperparameters=No
 
             if len(batch_stack) >= args.batch_size or idx == len(utt['beams'][0]) - 1 or idx == max_beam - 1:
                 batch_hyptexts = [utt['beams'][0][b_ix]['text'] for b_ix in batch_stack]
+
                 tlm_probs, cache = get_text_batched_probability(
                     args,
                     model,
@@ -321,7 +343,8 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps, hyperparameters=No
                 )
                 for ix, b_ix in enumerate(batch_stack):
                     if not args.use_targets and ix == 0:
-                        kvs_to_cache = {'cache': cache['cache'][:, :, 0, None], 'cache_lengths': cache['cache_lengths'][0, None]}
+                        kvs_to_cache = {'cache': cache['cache'][:, :, 0, None].clone(), 'cache_lengths': cache['cache_lengths'][0, None].clone()}
+              
                     cur_tlm_prob = tlm_probs[ix]
                     utt['beams'][0][b_ix]['tlm_prob'] = cur_tlm_prob if not cur_tlm_prob.isnan() and cur_tlm_prob != float('-inf') and cur_tlm_prob != 0 else torch.tensor(cur['second_pass_score']) - am_prob
                   

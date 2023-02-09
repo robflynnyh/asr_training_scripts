@@ -1,0 +1,27 @@
+echo '<<< TRAINING AUTOREGRESSIVE TLM >>>'
+
+python rec_rescoring_spotify.py --checkpoint 'pg_19_pretrained_c_62_id_87.pt' \
+    --checkpoint_dir './checkpoints/test/' \
+    --config './experiment_configs/lm/decoder_pg19.yaml' \
+    --min_lr 1e-5 \
+    --max_lr 5.5e-4 \
+    --step_size 250 \
+    --clip_gradients \
+    --clip_gradients_value 15 \
+    --max_allowed_utterance_gap 10.0 \
+    --wandb_id '' \
+    --save_top_k 1 \
+    --schedular_data './pg191kwftpd90.json' \
+    --utts 10 \
+    -batch 10  \
+
+    
+
+
+
+#GCC/9.3.0
+#    --wandb_id '3bc1yvgb' \
+
+#checkpoint_26_id_78.pt
+
+# step_size = step size up, step size down is step_size*4 
