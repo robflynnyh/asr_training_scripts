@@ -208,16 +208,15 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
                     new_states = torch.cat([prev_states['cache'], top_states])
                     prev_states['cache'] = new_states[1:] # shift states down by 1
             
-            using_bos =  not exists(prev_states) or args.bos_eos
+            using_bos = not exists(prev_states) or args.bos_eos
             sep = exists(prev_states)
             token_lens += 1 if using_bos else 0 # add 1 for bos if using
-            token_lens += int(sep)
+        
             tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
             targets = tokens.clone()
             targets[:, :-1] = tokens[:, 1:]
             eos_id = -100 if not args.bos_eos else 0
-            if sep:
-                targets = torch.cat([tokens[:,0][:,None], targets], dim=1)
+           
             targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
 
             mask = token_lens_to_mask(token_lens)
@@ -293,14 +292,13 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 using_bos = not exists(prev_states) or args.bos_eos
                 sep = exists(prev_states) 
                 token_lens += 1 if using_bos else 0 # add 1 for bos if using
-                token_lens += int(sep)
+                
                 tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
                 targets = tokens.clone()
                 targets[:, :-1] = tokens[:, 1:]
               
                 eos_id = -100 if not args.bos_eos else 0
-                if sep:
-                    targets = torch.cat([tokens[:,0][:,None], targets], dim=1)
+               
                 targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
                 mask = token_lens_to_mask(token_lens)
 
@@ -409,66 +407,77 @@ def main(args):
     results = {}
     saved_checkpoints = []
     for epoch_ in range(args.epochs): # todo move epoch loop to model utils as is consistent across model types
-        epoch = epoch_ + epoch_prev
-        #train_dataloader.sampler.set_epoch(epoch)
+        try: # for cuda out of memory errors
+            epoch = epoch_ + epoch_prev
+            #train_dataloader.sampler.set_epoch(epoch)
 
-        # args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None
-        loss = train_one_epoch(args, epoch, model, optim, schedular, # create new train samples each epoch so the negatives change
-            train_dataloader=train_sampler,
-            device=device, 
-            scaler=scaler, 
-            ema=ema
-        )          
+            
+            # args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None
+            loss = train_one_epoch(args, epoch, model, optim, schedular, # create new train samples each epoch so the negatives change
+                train_dataloader=train_sampler,
+                device=device, 
+                scaler=scaler, 
+                ema=ema
+            )          
 
-        try: # don't want this to crash if I accidentally delete the schedular config file
-            schedular = update_schedular(args, optim, schedular) # allows changing of min n max learning rate during training
-        except Exception as e:
-            if os.path.exists(args.schedular_data) == False:
-                print('Schedular config file not found, creating new one')
-                save_schedular_data(args)
+            try: # don't want this to crash if I accidentally delete the schedular config file
+                schedular = update_schedular(args, optim, schedular) # allows changing of min n max learning rate during training
+            except Exception as e:
+                if os.path.exists(args.schedular_data) == False:
+                    print('Schedular config file not found, creating new one')
+                    save_schedular_data(args)
+                else:
+                    print(e, '\n') # todo move all this to update_schedular it looks ugly :P
+
+            with ema.average_parameters(): # evaluate using ema of the parameters
+                vloss = validate_one_epoch(
+                    args,
+                    model, 
+                    Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False, split_into_splits=600), 
+                    device, 
+                    sanity_check=False
+                )
+
+            if args.wandb:
+                wandb.log({'val_loss': vloss, 'epoch': epoch})
+
+            print(f'\n\n\n--- Epoch {epoch}, Validation Loss: {vloss} ---\n\n\n')
+            results[epoch] = {'loss': loss, 'vloss': vloss}
+        
+            if len(saved_checkpoints) < args.save_top_k:
+                ema.store()
+                ema.copy_to() # save ema of the parameters
+                path = save_checkpoint(args, model, optim, epoch, vloss)
+                ema.restore()
+                draw_text('High Score')
+                saved_checkpoints.append({
+                    'path': path,
+                    'epoch': epoch,
+                    'vloss': vloss
+                })
+            elif vloss < max(saved_checkpoints, key=lambda x: x['vloss'])['vloss']:
+                ema.store()
+                ema.copy_to()
+                path = save_checkpoint(args, model, optim, epoch, vloss)
+                ema.restore()
+                draw_text('High Score')
+                saved_checkpoints.append({
+                    'path': path,
+                    'epoch': epoch,
+                    'vloss': vloss
+                })
+                saved_checkpoints.sort(key=lambda x: x['vloss'])
+                to_remove = saved_checkpoints.pop()
+                os.remove(to_remove['path']) 
+
+        except RuntimeError as e:
+            if str(e).startswith('CUDA out of memory'):
+                print('): CUDA out of memory!!!! trying to recover ); \n Please download more GPUs')
+                torch.cuda.empty_cache()
+                model = model.to(device)
+                continue
             else:
-                print(e, '\n') # todo move all this to update_schedular it looks ugly :P
-
-        with ema.average_parameters(): # evaluate using ema of the parameters
-            vloss = validate_one_epoch(
-                args,
-                model, 
-                Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False, split_into_splits=600), 
-                device, 
-                sanity_check=False
-            )
-
-        if args.wandb:
-            wandb.log({'val_loss': vloss, 'epoch': epoch})
-
-        print(f'\n\n\n--- Epoch {epoch}, Validation Loss: {vloss} ---\n\n\n')
-        results[epoch] = {'loss': loss, 'vloss': vloss}
-    
-        if len(saved_checkpoints) < args.save_top_k:
-            ema.store()
-            ema.copy_to() # save ema of the parameters
-            path = save_checkpoint(args, model, optim, epoch, vloss)
-            ema.restore()
-            draw_text('High Score')
-            saved_checkpoints.append({
-                'path': path,
-                'epoch': epoch,
-                'vloss': vloss
-            })
-        elif vloss < max(saved_checkpoints, key=lambda x: x['vloss'])['vloss']:
-            ema.store()
-            ema.copy_to()
-            path = save_checkpoint(args, model, optim, epoch, vloss)
-            ema.restore()
-            draw_text('High Score')
-            saved_checkpoints.append({
-                'path': path,
-                'epoch': epoch,
-                'vloss': vloss
-            })
-            saved_checkpoints.sort(key=lambda x: x['vloss'])
-            to_remove = saved_checkpoints.pop()
-            os.remove(to_remove['path']) 
+                raise e
 
         finished = train_sampler.step()
         if finished:

@@ -64,17 +64,19 @@ def get_text_probability(args, model, tokenizer, text, cached_states=None, next_
     tokens, token_lens = tokens.to(device), token_lens.to(device)
     tokens = add_bos_token(tokens, bos_token_id=0) if add_bos else tokens # don't add bos if we're starting from a cached state (bos is already there)
     targets = tokens.clone()
+    sep = exists(cached_states)
     
-    targets[:, :-1] = tokens[:, 1:] # shift targets by 1 
-    if exists(next_target):
-        targets[:, -1] = next_target
-    elif not args.eosbos:
+    if not sep:
+        targets[:, :-1] = tokens[:, 1:] # shift targets by 1 
+
+    if not args.eosbos:
         targets = targets[:, :-1] # remove last token 
     else:
         targets[:, -1] = 0 # set last token to eos
 
     #print(token_lens)
-    logits, _, cached_states = model(x=tokens, length=token_lens, cache=cached_states, durations=duration_data)
+    token_lens+=int(sep)
+    logits, _, cached_states = model(x=tokens, length=token_lens, cache=cached_states, durations=duration_data, sep=sep)
     #print(cached_states['cache'].shape)
 
     # remove first and last token 
@@ -380,7 +382,7 @@ def run_random_search(args, model, tokenizer, hypothesis):
     args.tlm_std = standardisation_stats['tlm_std']
     
     bpe_lm_weights_range = [-0.6, 0.6]
-    tlm_scales = [25.0, 65.0]
+    tlm_scales = [25.0, 70.0]
     ngram_scales = [0.0, 1.25]
     length_penalties = [0.0, 0.0] #not used anymore
     bpe_length_penalty_weights = [0.2, 3.75]
