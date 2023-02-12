@@ -12,7 +12,12 @@ def fetch_addons(model_config):
     for add_on_module in add_ons.keys():
         if add_on_module == 'length_predictor':
             add_on_modules[add_on_module] = addons.LengthPredictor(dim=add_ons[add_on_module].get('dim', 256))
-        
+        if add_on_module == 'sep_token':
+            sep_token = torch.randn(1, add_ons[add_on_module].get('dim', 256))
+            torch.nn.init.normal_(sep_token, std=0.02)
+            sep_token = nn.Parameter(sep_token)
+            add_on_modules[add_on_module] = sep_token
+    
     return add_on_modules
 
 def load_qknorm_transformer(config:OmegaConf, tokenizer, **kwargs):

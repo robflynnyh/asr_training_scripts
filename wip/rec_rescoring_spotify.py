@@ -209,7 +209,7 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
                     new_states = torch.cat([prev_states['cache'], top_states])
                     prev_states['cache'] = new_states[1:] # shift states down by 1
             
-            using_bos = True # not exists(prev_states) or args.bos_eos
+            using_bos =  not exists(prev_states) or args.bos_eos
             token_lens += 1 if using_bos else 0 # add 1 for bos if using
             tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
             targets = tokens.clone()
@@ -287,7 +287,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                         new_states = torch.cat([prev_states['cache'], top_states])
                         prev_states['cache'] = new_states[1:] # shift states down by 1
         
-                using_bos = True#not exists(prev_states) or args.bos_eos
+                using_bos = not exists(prev_states) or args.bos_eos
                 token_lens += 1 if using_bos else 0 # add 1 for bos if using
                 tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
                 targets = tokens.clone()

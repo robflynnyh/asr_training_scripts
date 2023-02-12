@@ -1,19 +1,19 @@
 echo '<<< TRAINING AUTOREGRESSIVE TLM >>>'
 
-python rec_rescoring_spotify.py --checkpoint 'pg_19_pretrained_c_62_id_87.pt' \
-    --checkpoint_dir './checkpoints/test/' \
-    --config './experiment_configs/lm/decoder_pg19.yaml' \
-    --min_lr 1e-5 \
-    --max_lr 5.5e-4 \
+python rec_rescoring_opensub.py --checkpoint 'pg_19_pretrained_c_62_id_87.pt' \
+    --checkpoint_dir './checkpoints/test_open_sub_sep/' \
+    --config './experiment_configs/lm/decoder_pg19_sep_token.yaml' \
+    --min_lr 4e-5 \
+    --max_lr 5.0e-4 \
     --step_size 250 \
     --clip_gradients \
     --clip_gradients_value 15 \
     --max_allowed_utterance_gap 10.0 \
     --wandb_id '' \
-    --save_top_k 1 \
+    --save_top_k 8 \
     --schedular_data './pg191kwftpd90.json' \
-    --utts 10 \
-    -batch 10  \
+    --utts 20 \
+    -batch 30  \
 
     
 

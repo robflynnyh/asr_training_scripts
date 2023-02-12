@@ -1,6 +1,6 @@
 echo '<<< TRAINING SMALL SC-CTC MODEL >>>'
 
-python train_H.py --checkpoint 'checkpoint_54_id_33.pt' \
+python train_H.py --checkpoint 'checkpoint_71_id_85.pt' \
     --checkpoint_dir './checkpoints' \
     --model_config '../model_configs/conformer_sc_ctc_bpe_small.yaml' \
     --min_lr 1e-6 \

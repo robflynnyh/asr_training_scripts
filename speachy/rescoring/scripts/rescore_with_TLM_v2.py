@@ -55,7 +55,7 @@ def get_text_probability(args, model, tokenizer, text, cached_states=None, next_
 
     last_token = tokens[0, -1] if len(tokens[0]) > 0 else None
 
-    add_bos = cached_states is None or args.eosbos 
+    add_bos = cached_states is None or args.eosbos or args.bos 
   
     token_lens = torch.tensor([tokens.shape[-1]]) + (1 if add_bos else 0)
     if tokens.shape[-1] == 0: # (should carry over last token and remove it from cache)
@@ -526,7 +526,7 @@ if __name__ == '__main__':
     
     parser.add_argument('-eosbos','--eosbos', action='store_true', help='whether to model boundary tokens in the TLM')
     parser.add_argument('-length_pred','--length_prediction', action='store_true', help='use length prediction') # not used rlly
-    
+    parser.add_argument('-bos','--bos', action='store_true')
     parser.add_argument('-env','--env_file', default='/exp/exp1/acp21rjf/deliberation/speachy/.env', help='path to sclite executable')
 
     args = parser.parse_args()

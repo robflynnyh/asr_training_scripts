@@ -461,11 +461,16 @@ class transformer_lm(nn.Module):
             return x, logits
         return self_condition if (self.self_conditioning or self.intermediate_loss) and self.training else None
 
-    def add_ons(self, x, stage, **kwargs):
+    def add_ons(self, x, length, stage, **kwargs):
         if stage == 'token':
             if 'durations' in kwargs and hasattr(self, 'length_predictor') and exists(self.length_predictor):
                 x[:,0] = self.length_predictor(kwargs['durations']) + x[:,0]
-        return x
+            if kwargs.get('sep', False) and hasattr(self, 'sep_token'):
+                x = torch.cat([repeat(self.sep_token, '() d -> b () d', b=x.shape[0]), x], dim=1)
+                if length is not None:
+                    assert length.max() == x.shape[1], f'lengths do not match: {length.max()} != {x.shape[1]}'
+
+        return x, length
 
     def forward(self, x, length=None, cache:Dict=None, **kwargs):
         '''
@@ -474,7 +479,7 @@ class transformer_lm(nn.Module):
         cache: {cache_lengths: [B, N], cache: [L, KV, B, H, N, D]} KV: key and value (2)
         '''
         x = self.embedding(x)
-        x = self.add_ons(x, 'token', **kwargs)
+        x, length = self.add_ons(x, length, 'token', **kwargs)
         x = self.abs_pos(x) 
   
         x, interim_logits, cached_kvs = self.layers(x, length, self_condtioning=self.self_condition_fn(), cache=cache)
