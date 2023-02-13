@@ -11,6 +11,7 @@
 *.gz
 *.pkl
 *.lm.bin
+.env
 
 wandb/
 wandb/*
