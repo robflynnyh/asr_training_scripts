@@ -62,7 +62,7 @@ def get_text_batched_probability(args, model, tokenizer, batched_text, cached_st
     token_lens += (1 if add_bos else 0)
 
     targets = tokens.clone()
-    targets[:, :-1] = tokens[:, 1:] # shift targets by 1
+    targets[:, :-1] = targets[:, 1:] # shift targets by 1
 
 
     targets = add_eos_token(targets, eos_id=0 if args.eosbos else -100, token_lens=token_lens) # pad targets if no eos 
@@ -76,9 +76,9 @@ def get_text_batched_probability(args, model, tokenizer, batched_text, cached_st
         cached_states['cache_lengths'] = cached_states['cache_lengths'][0,None].to(device)
         cached_states['cache_lengths'] = cached_states['cache_lengths'].expand(items_in_batch).clone().contiguous()
    
-    logits, _, cached_states = model(x=tokens, length=token_lens, cache=cached_states, durations=duration_data)
+    logits, _, cached_states = model(x=tokens, length=token_lens, cache=cached_states, durations=duration_data, sep=exists(cached_states))
 
-    '''toadd = 1 if add_bos else 0
+    toadd = 1 if add_bos else 0
     logits = logits[:, toadd:, :] 
     targets = targets[:, toadd:] # 
     

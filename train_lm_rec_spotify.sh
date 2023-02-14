@@ -1,7 +1,7 @@
 echo '<<< TRAINING AUTOREGRESSIVE TLM >>>'
 
 python rec_rescoring_opensub.py --checkpoint 'pg_19_pretrained_c_62_id_87.pt' \
-    --checkpoint_dir './checkpoints/test_open_sub_sep/' \
+    --checkpoint_dir './checkpoints/test_open_sub_sep_shiftdown/' \
     --config './experiment_configs/lm/decoder_pg19_sep_token.yaml' \
     --min_lr 4e-5 \
     --max_lr 3.0e-4 \

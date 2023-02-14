@@ -17,7 +17,8 @@ from nemo.collections.asr.metrics.wer import word_error_rate
 from omegaconf.omegaconf import OmegaConf
 from model_utils import load_checkpoint, load_nemo_checkpoint, load_model, load_sc_model, write_to_log
 
-import non_iid_dataloader
+#import non_iid_dataloader
+from speachy.asr.dataloading import non_iid_dataloader
 import nemo.collections.asr as nemo_asr
 
 import pickle as pkl
@@ -208,7 +209,6 @@ def search_first_pass_alpha_beta_search(args, bpe_lm, vocab, hyp_data, ids_to_te
 
 def second_pass_alpha_beta_seach(args, ngram_lm, hyp_data):
     results = []
-    unk_offsets = np.linspace(np.log10(np.exp(-10)), np.log10(np.exp(-10))*4, 6).tolist()
     for sp_alpha in [0.3, 0.4, 0.5, 0.6]:
         for beta in [0.0, 0.5, 0.6, 0.7]:
             for fp_alpha in [0.8, 0.9, 1.0, 1.1, 1.2]:
@@ -330,9 +330,9 @@ if __name__ == '__main__':
     
 
     parser.add_argument('--beam_size', type=int, default=1000)
-    parser.add_argument('--bpe_lm_path', type=str, default='./ngrams/binary_bpe/kenlmbpe6.lm.bin')
+    parser.add_argument('--bpe_lm_path', type=str, default='./ngrams/binary_bpe/ami_6grambpe.bin')
 
-    parser.add_argument('-lm', '--language_model', type=str, default='./ngrams/cantab_interp_tedlium.arpa', help='arpa n-gram model for decoding')#./ngrams/3gram-6mix.arpa
+    parser.add_argument('-lm', '--language_model', type=str, default='./ngrams/cantab_interp_ami.arpa', help='arpa n-gram model for decoding')#./ngrams/3gram-6mix.arpa
     parser.add_argument('--split', type=str, default='test')
     parser.add_argument('--alpha', type=float, default=0.5)
     parser.add_argument('--beta', type=float, default=0.8)

@@ -104,17 +104,7 @@ def create_samples_from_recording(recording:List[str], num_utterances):
         samples[-1].append(([sentence]))
     return samples
 
-'''def create_dataset_samples(recordings, num_utterances, shuffle=True):
-    samples = []
-    episodes =  recordings['parent_id'].unique().tolist()
-    for episode in tqdm(episodes, desc='Creating samples'):
-        data = recordings[recordings['parent_id'] == episode]['text']
-        samples += create_samples_from_recording(data.tolist(), num_utterances)
-    
 
-    if shuffle:
-        np.random.shuffle(samples) # shuffle samples    
-    return samples'''
 
 def create_dataset_samples(recordings, num_utterances, shuffle=True):
     samples = []

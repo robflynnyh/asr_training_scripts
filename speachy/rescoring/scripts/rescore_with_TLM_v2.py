@@ -74,7 +74,7 @@ def get_text_probability(args, model, tokenizer, text, cached_states=None, next_
         targets[:, -1] = 0 # set last token to eos
 
     #print(token_lens)
-    logits, _, cached_states = model(x=tokens, length=token_lens, cache=cached_states, durations=duration_data)
+    logits, _, cached_states = model(x=tokens, length=token_lens, cache=cached_states, durations=duration_data, sep=exists(cached_states))
     #print(cached_states['cache'].shape)
 
     # remove first and last token 
@@ -379,8 +379,8 @@ def run_random_search(args, model, tokenizer, hypothesis):
     args.tlm_mean = standardisation_stats['tlm_mean']
     args.tlm_std = standardisation_stats['tlm_std']
     
-    bpe_lm_weights_range = [-0.6, 0.6]
-    tlm_scales = [25.0, 65.0]
+    bpe_lm_weights_range = [-0.7, 0.4]
+    tlm_scales = [40.0, 80.0]
     ngram_scales = [0.0, 1.25]
     length_penalties = [0.0, 0.0] #not used anymore
     bpe_length_penalty_weights = [0.2, 3.75]

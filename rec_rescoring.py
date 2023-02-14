@@ -210,7 +210,7 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
             mask = token_lens_to_mask(token_lens)
             targets = mark_padding(targets, mask, pad_id=-100)
 
-            logits, _, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, durations=durations)
+            logits, _, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, durations=durations, sep=exists(prev_states))
             loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
 
             total_lengths += token_lens.sum().item()
@@ -288,8 +288,14 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 mask = token_lens_to_mask(token_lens)
                 targets = mark_padding(targets, mask, pad_id=-100)
 
-                logits, interim_posteriors, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, durations=durations)
-                
+                logits, interim_posteriors, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, durations=durations, sep=exists(prev_states))
+                # get indices where targets mean is -100 (all padding), and remove those from logits and targets
+                indices_to_remove = torch.where(targets.mean(dim=1) == -100)[0]
+                # don't remove anything if there are no indices to remove
+                if indices_to_remove.size(0) != 0:
+                    logits = torch.index_select(logits, 0, indices_to_remove)
+                    targets = torch.index_select(targets, 0, indices_to_remove)
+
                 loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
                 
                 interim_loss = intermediate_loss(loss_ce, interim_posteriors, targets)
@@ -324,6 +330,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
 
         if args.wandb:
             wandb.log({'train_loss': total_sub_batch_loss, 'lrate': cur_lr})
+
             
     loss_end = sum(losses) / len(losses)
     if args.wandb:

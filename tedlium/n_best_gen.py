@@ -245,56 +245,58 @@ def main(args):
     vocab = [chr(idx + 100) for idx in range(len(tokenizer.vocab))]
 
     
-    temp_name_dev = f'dev_{args.load_tmp}'
+    temp_name_dev = f'dev_{args.load_tmp}' 
     temp_name_test = f'test_{args.load_tmp}'
     dev_stage, test_stage = None, None # stage corresponds to the last step of the pipeline that was completed
 
     if os.path.exists(os.path.join(args.tmp_dir, temp_name_dev)):
         dev_stage, dev_hyps = load_pickle(os.path.join(args.tmp_dir, temp_name_dev))
     
-    if dev_stage == None:
+    
+    if dev_stage == None: 
         print(f'Fetching logits for dev set...')
         dev_hyps = get_logits(args, model, corpus_dict['dev'])
         save_pickle(os.path.join(args.tmp_dir, temp_name_dev), dev_hyps, stage='logits')
         dev_stage = 'logits'
-    
 
     print(f'performing grid search for pass decoding...')
     fp_alpha, fp_beta = search_first_pass_alpha_beta_search(args, bpe_lm, vocab, dev_hyps, ids_to_text_func, 15)
-    dev_hyps = first_pass_decode(args, bpe_lm=bpe_lm, vocab=vocab, hyp_data=dev_hyps, beam_width=args.beam_size, alpha=fp_alpha, beta=fp_beta, ids_to_text_func=ids_to_text_func)
-    fpass_wer_dev = eval_beams(dev_hyps)
-    print(f'First pass dev WER: {fpass_wer_dev}')
-    #save_pickle(os.path.join(args.tmp_dir, temp_name_dev), dev_hyps, stage='first_pass')
-    #dev_stage = 'first_pass'
+    if args.rundev:
+        dev_hyps = first_pass_decode(args, bpe_lm=bpe_lm, vocab=vocab, hyp_data=dev_hyps, beam_width=args.beam_size, alpha=fp_alpha, beta=fp_beta, ids_to_text_func=ids_to_text_func)
+        fpass_wer_dev = eval_beams(dev_hyps)
+        print(f'First pass dev WER: {fpass_wer_dev}')
+        #save_pickle(os.path.join(args.tmp_dir, temp_name_dev), dev_hyps, stage='first_pass')
+        #dev_stage = 'first_pass'
 
-    #assert dev_stage == 'first_pass', 'dev stage should be first pass at this point - something went wrong - please delete dev tmp file and try again (sorry)'
-    print(f'Performing grid search for second pass decoding...')
-    fp_alpha_weight, sp_alpha, sp_beta, unk_offset, dev_wer, dev_hyps = second_pass_alpha_beta_seach(args, ngram_lm, dev_hyps)
-    save_pickle(os.path.join(args.tmp_dir, temp_name_dev), dev_hyps, stage='finished')
-    print(f'--- Finished dev set -------')
-    del dev_hyps # free up memory
+        #assert dev_stage == 'first_pass', 'dev stage should be first pass at this point - something went wrong - please delete dev tmp file and try again (sorry)'
+        print(f'Performing grid search for second pass decoding...')
+        fp_alpha_weight, sp_alpha, sp_beta, unk_offset, dev_wer, dev_hyps = second_pass_alpha_beta_seach(args, ngram_lm, dev_hyps)
+        save_pickle(os.path.join(args.tmp_dir, temp_name_dev), dev_hyps, stage='finished')
+        print(f'--- Finished dev set -------')
+        del dev_hyps # free up memory
+    else:
+        if os.path.exists(os.path.join(args.tmp_dir, temp_name_test)):
+            test_stage, test_hyps = load_pickle(os.path.join(args.tmp_dir, temp_name_test))
 
-    '''if os.path.exists(os.path.join(args.tmp_dir, temp_name_test)):
-        test_stage, test_hyps = load_pickle(os.path.join(args.tmp_dir, temp_name_test))
-
-    if test_stage == None:
-        print(f'Fetching logits for test set...')
-        test_hyps = get_logits(args, model, corpus_dict['test'])
-        save_pickle(os.path.join(args.tmp_dir, temp_name_test), test_hyps, stage='logits')
-        test_stage = 'logits'
+        if test_stage == None:
+            print(f'Fetching logits for test set...')
+            test_hyps = get_logits(args, model, corpus_dict['test'])
+            save_pickle(os.path.join(args.tmp_dir, temp_name_test), test_hyps, stage='logits')
+            test_stage = 'logits'
 
 
-    test_hyps = first_pass_decode(args, bpe_lm=bpe_lm, vocab=vocab, hyp_data=dev_hyps, beam_width=args.beam_size, alpha=fp_alpha, beta=fp_beta, ids_to_text_func=ids_to_text_func)
-    fpass_wer_test = eval_beams(dev_hyps)
-    print(f'First pass dev WER: {fpass_wer_test}')
+        test_hyps = first_pass_decode(args, bpe_lm=bpe_lm, vocab=vocab, hyp_data=test_hyps, beam_width=args.beam_size, alpha=fp_alpha, beta=fp_beta, ids_to_text_func=ids_to_text_func)
+        fpass_wer_test = eval_beams(test_hyps)
+        print(f'First pass dev WER: {fpass_wer_test}')
 
-    test_hyps = second_pass_rescore(args, ngram_lm, test_hyps, sp_beta, sp_alpha)
-    test_wer = eval_beams(hyp_data=test_hyps)
-    save_pickle(os.path.join(args.tmp_dir, temp_name_test), test_hyps, stage='Finished')
-    print('FINISHED')
-    print(f'first pass alpha: {fp_alpha}, beta: {fp_beta}, second pass alpha: {sp_alpha}, beta: {sp_beta}')
-    print(f'Dev WER: {dev_wer}, Test WER: {test_wer}')
-    print('GOODBYE')'''
+        fp_alpha, sp_alpha, beta, unk_offset = args.fp_alpha, args.sp_alpha, args.beta, args.unk_offset
+        test_hyps = second_pass_rescore(args, ngram_lm, test_hyps, fp_alpha, sp_alpha, beta, unk_offset)
+        test_wer = eval_beams(hyp_data=test_hyps)
+        save_pickle(os.path.join(args.tmp_dir, temp_name_test), test_hyps, stage='finished')
+        print('FINISHED')
+        print(f'first pass alpha: {fp_alpha}, beta: {fp_beta}, second pass alpha: {sp_alpha}, beta: {beta}')
+        print(f'Test WER: {test_wer}')
+        print('GOODBYE')
     
     
 
@@ -310,7 +312,7 @@ if __name__ == '__main__':
     '''
     parser = argparse.ArgumentParser() 
 
-
+    parser.add_argument('-rundev', '--rundev', action='store_true', help='whether to run on dev set')
     parser.add_argument('-load_tmp', '--load_tmp', default='tmp.pkl', type=str, help='base name of logit hyp to load (full name = split+_+name')
     parser.add_argument('-tmp_dir','--tmp_dir', type=str, default='./tmp', help='path to tmp dir')
 
@@ -323,6 +325,10 @@ if __name__ == '__main__':
     parser.add_argument('--tokenizer_model', type=str, default='./tokenizers/tokenizer_spe_bpe_v128/tokenizer.model', help='path to tokenizer model')
     parser.add_argument('--max_duration', type=float, default=0, help='max duration of audio in seconds')
 
+    parser.add_argument('-sp_alpha', '--sp_alpha', type=float, default=0.6, help='second pass alpha')
+    parser.add_argument('-fp_alpha', '--fp_alpha', type=float, default=0.9, help='first pass alpha')
+    parser.add_argument('-beta', '--beta', type=float, default=0.7, help='second pass beta')
+    parser.add_argument('-unk_offset', '--unk_offset', type=float, default=-18, help='second pass unk offset')
 
     parser.add_argument('--log_file', type=str, default='eval_log.txt')
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints')
@@ -335,7 +341,6 @@ if __name__ == '__main__':
     parser.add_argument('-lm', '--language_model', type=str, default='./ngrams/cantab_interp_tedlium.arpa', help='arpa n-gram model for decoding')#./ngrams/3gram-6mix.arpa
     parser.add_argument('--split', type=str, default='test')
     parser.add_argument('--alpha', type=float, default=0.5)
-    parser.add_argument('--beta', type=float, default=0.8)
 
     parser.add_argument('-token_skip', '--token_min_logp', default=-5, type=float)
     parser.add_argument('-beam_prune', '--beam_prune_logp', default=-10000, type=float)
