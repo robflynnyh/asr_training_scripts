@@ -202,10 +202,10 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
             sep = exists(prev_states)
             token_lens += 1 if using_bos else 0 # add 1 for bos if using
         
-            tokens = add_bos(tokens, bos_token_id=1) if using_bos else tokens # add bos only if this is the first sub-batch
+            tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
             targets = tokens.clone()
             targets[:, :-1] = tokens[:, 1:]
-            eos_id = -100 if not args.bos_eos else 1
+            eos_id = -100 if not args.bos_eos else 0
            
             targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
 
@@ -283,11 +283,11 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 sep = exists(prev_states) 
                 token_lens += 1 if using_bos else 0 # add 1 for bos if using
                 
-                tokens = add_bos(tokens, bos_token_id=1) if using_bos else tokens # add bos only if this is the first sub-batch
+                tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
                 targets = tokens.clone()
                 targets[:, :-1] = tokens[:, 1:]
               
-                eos_id = -100 if not args.bos_eos else 1
+                eos_id = -100 if not args.bos_eos else 0
                
                 targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
                 mask = token_lens_to_mask(token_lens)
@@ -337,8 +337,8 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
     return loss_end
 
 
-def load_csv(path): 
-    return pd.read_csv(path, low_memory=False, nrows=1000000)
+def load_csv(path):
+    return pd.read_csv(path, low_memory=False)
 
 def main(args):
 

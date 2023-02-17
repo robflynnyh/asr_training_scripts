@@ -6,7 +6,7 @@ import torch.nn as nn
 from .DEFAULTS import get_model_defaults
 from speachy.lm import addons
 
-def fetch_addons(model_config):
+def fetch_addons(model_config, tokenizer):
     add_on_modules = {}
     add_ons = model_config.get('add_ons', {})
     for add_on_module in add_ons.keys():
@@ -17,7 +17,10 @@ def fetch_addons(model_config):
             torch.nn.init.normal_(sep_token, std=0.02)
             sep_token = nn.Parameter(sep_token)
             add_on_modules[add_on_module] = sep_token
-    
+        if add_on_module == 'next_sentence_pred':
+            dim = add_ons[add_on_module].get('dim', 1500)
+            dim = dim if dim != 'vocab' else tokenizer.vocab_size
+            add_on_modules[add_on_module] = addons.NextSentenceTokenAdapter(dim=dim)
     return add_on_modules
 
 def load_qknorm_transformer(config:OmegaConf, tokenizer, **kwargs):
@@ -37,7 +40,7 @@ def load_qknorm_transformer(config:OmegaConf, tokenizer, **kwargs):
         dropout = config.get('dropout', 0.1),
         **config_kwargs
     )
-    add_ons = fetch_addons(config)
+    add_ons = fetch_addons(config, tokenizer)
     for add_on in add_ons.keys():
         setattr(transformer, add_on, add_ons[add_on]) # add the add-ons to the transformer
 

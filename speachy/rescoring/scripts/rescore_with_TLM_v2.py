@@ -39,47 +39,40 @@ class argsclass:
 
 
 @torch.no_grad()
-def get_text_probability(args, model, tokenizer, text, cached_states=None, next_target=None, first_token=None, duration_data=None):
+def get_text_probability(args, model, tokenizer, text, cached_states=None, duration_data=None):
     def calc_length_penalty(lp_length):
         return torch.tensor(lp_length).float().log().item()
 
     device = torch.device(args.device)
     tokens = tokenizer.text_to_ids(text)
+
     tokens = torch.tensor(tokens).unsqueeze(0).long()
 
-    if exists(first_token):
-        tokens = torch.cat([first_token[None,None], tokens], dim=-1) # add first token from previous utterance
-        if exists(cached_states):
-            cached_states['cache_lengths'] -= 1 # trim last token from cache
-            cached_states['cache'] = cached_states['cache'][:, :, :, :, :-1]
-
-    last_token = tokens[0, -1] if len(tokens[0]) > 0 else None
-
-    add_bos = cached_states is None or args.eosbos or args.bos 
+    add_bos = not exists(cached_states) or args.eosbos
   
     token_lens = torch.tensor([tokens.shape[-1]]) + (1 if add_bos else 0)
     if tokens.shape[-1] == 0: # (should carry over last token and remove it from cache)
-        return torch.tensor(torch.nan), cached_states, calc_length_penalty(1), last_token
+        return torch.tensor(torch.nan), cached_states, calc_length_penalty(1)
   
     tokens, token_lens = tokens.to(device), token_lens.to(device)
     tokens = add_bos_token(tokens, bos_token_id=0) if add_bos else tokens # don't add bos if we're starting from a cached state (bos is already there)
-    targets = tokens.clone()
     
+    targets = tokens.clone()
     targets[:, :-1] = tokens[:, 1:] # shift targets by 1 
-    if exists(next_target):
-        targets[:, -1] = next_target
-    elif not args.eosbos:
+    
+    if not args.eosbos:
         targets = targets[:, :-1] # remove last token 
     else:
         targets[:, -1] = 0 # set last token to eos
 
     #print(token_lens)
+    
     logits, _, cached_states = model(x=tokens, length=token_lens, cache=cached_states, durations=duration_data, sep=exists(cached_states))
     #print(cached_states['cache'].shape)
 
     # remove first and last token 
     toadd = 1 if add_bos else 0
-    logits = logits[:, toadd:-1, :] if not exists(next_target) else logits[:, toadd:, :] # remove last target if not provided
+    logits = logits[:, toadd:-1, :] 
     targets = targets[:, toadd:] # 
     
     if not args.eosbos:
@@ -88,13 +81,17 @@ def get_text_probability(args, model, tokenizer, text, cached_states=None, next_
 
     # temperature
     logits = logits / args.temperature
+    torch.set_printoptions(profile="full")
+
     logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
 
     logprobs = logprobs.squeeze(0).gather(1, targets.squeeze(0).unsqueeze(1)).squeeze() 
-    logprobslen = logprobs.shape[0] if len(logprobs.shape) > 0 else 1
-    logprobs = logprobs.sum() 
 
-    return logprobs.to('cpu'), cached_states, calc_length_penalty(logprobslen), last_token
+    logprobslen = logprobs.shape[0] if len(logprobs.shape) > 0 else 1
+
+    logprobs = logprobs.sum()
+
+    return logprobs.to('cpu'), cached_states, calc_length_penalty(logprobslen)
 
 
 def trim_cache(args, kv_cache, max_len):
@@ -240,7 +237,6 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps, hyperparameters=No
     max_history = args.max_history_len
     device = torch.device(args.device)
     prev_end = None # previous utterance end time
-    last_token = None # last token of previous utterance
     kv_cache = None
     kvs_to_cache = None
 
@@ -258,14 +254,14 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps, hyperparameters=No
         prev_end = segment_start if prev_end is None else prev_end
 
         expire_history = True if segment_start - prev_end > args.max_utt_gap else False
-        last_token = None if expire_history else last_token
+
         kv_cache = None if expire_history > args.max_utt_gap else kv_cache
         kv_cache = trim_cache(args, kv_cache, max_history)
         prev_end = segment_end
 
         if args.use_targets: # uses target hypothesis as history (rather than ASR output)
             target = utt['targets'][0]
-            _, cache, _, next_first_token = get_text_probability(args, model, tokenizer, target, cached_states=kv_cache, next_target=next_target)
+            _, cache, _ = get_text_probability(args, model, tokenizer, target, cached_states=kv_cache, next_target=next_target)
             kvs_to_cache = {'cache': cache['cache'].clone(), 'cache_lengths': cache['cache_lengths'].clone()}  #debug thing'''''
 
         has_stats = exists(hyperparameters)
@@ -282,24 +278,21 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps, hyperparameters=No
             am_prob = torch.tensor(cur['am_score'])
             ngram_prob = torch.tensor(cur['second_pass_score']) - am_prob
 
-            tlm_prob, cache, length_penalty, last_token_ = \
+            tlm_prob, cache, length_penalty = \
                 get_text_probability(
                     args, 
                     model, 
                     tokenizer, 
                     hyptext, 
                     cached_states=kv_cache, 
-                    next_target=None, # remove
-                    first_token=None, # remove
                     duration_data=duration_data
                 )
 
             # do this by default
             if idx == 0 and not has_stats and not args.use_targets: # if not using targets, and there is no hyperpameters to compute a score, then we will use the first beam as the cache
                 kvs_to_cache = {'cache': cache['cache'].clone(), 'cache_lengths': cache['cache_lengths'].clone()} if cache is not None else None
-                next_first_token = last_token_
+        
              
-            
             tlm_prob = ngram_prob if tlm_prob.isnan() or tlm_prob == float('-inf') or tlm_prob == 0 else tlm_prob # replace with ngram_probability if it is nan or inf 
             cur['tlm_prob'] = tlm_prob
             cur['length_penalty'] = length_penalty
@@ -307,16 +300,14 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps, hyperparameters=No
             if has_stats and not args.use_targets:
                 rescore_prob = calc_score(cur, hyperparameters)
                 if exists(cache):
-                    cached_states.append((rescore_prob, {'cache': cache['cache'].clone().cpu(), 'cache_lengths': cache['cache_lengths'].clone().cpu()}, last_token_))
+                    cached_states.append((rescore_prob, {'cache': cache['cache'].clone().cpu(), 'cache_lengths': cache['cache_lengths'].clone().cpu()}))
 
         if has_stats and not args.use_targets:
             cached_states = sorted(cached_states, key=lambda x: x[0], reverse=True)
             kvs_to_cache = {k:v.to(device) for k,v in cached_states[0][1].items() if type(v) == torch.Tensor}
-            next_first_token = cached_states[0][2]
             del cached_states 
         
-        if not args.eosbos:
-            last_token = next_first_token 
+  
         
 
     return recording_hyps

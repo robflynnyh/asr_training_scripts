@@ -338,7 +338,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
 
 
 def load_csv(path): 
-    return pd.read_csv(path, low_memory=False, nrows=1000000)
+    return pd.read_csv(path, low_memory=False)
 
 def main(args):
 

@@ -193,6 +193,7 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
                 prev_fetch = prev_fetch[sb_idxs]
                 prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
                 prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
+                prev_states['next_sentence_pred'] = prev_states['next_sentence_pred'][prev_fetch]
                 if args.shift_states:
                     top_states = prev_states['cache'][-1][None]
                     new_states = torch.cat([prev_states['cache'], top_states])
@@ -204,25 +205,34 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
         
             tokens = add_bos(tokens, bos_token_id=1) if using_bos else tokens # add bos only if this is the first sub-batch
             targets = tokens.clone()
-            targets[:, :-1] = tokens[:, 1:]
-            eos_id = -100 if not args.bos_eos else 1
-           
-            targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
-
-            mask = token_lens_to_mask(token_lens)
-            targets = mark_padding(targets, mask, pad_id=-100)
+            if not exists(prev_states):
+                targets[:, :-1] = tokens[:, 1:]
+                eos_id = 1
+                targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
+                mask = token_lens_to_mask(token_lens)
+                targets = mark_padding(targets, mask, pad_id=-100)
+            else:
+                # concat zero vector to end of targets
+                targets = torch.cat([targets, torch.zeros(targets.size(0), 1, device=targets.device, dtype=targets.dtype)], dim=1)
+                eos_id = 1
+                targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens+1)
+                mask = token_lens_to_mask(token_lens+1)
+                targets = mark_padding(targets, mask, pad_id=-100)
             
             logits, _, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, sep=sep)
 
-            if targets.sum() != -100: # edge case
-                loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
-                total_lengths += token_lens.sum().item()
-                total_sb_losses.append(loss.item() * token_lens.sum().item())
+            if exists(prev_states):
+                logits = torch.cat([prev_states['next_sentence_pred'], logits], dim=1)
+
+            loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
+            total_lengths += token_lens.sum().item()
+            total_sb_losses.append(loss.item() * token_lens.sum().item())
             
             
             prev_states = { # cache is [L, KV, B, H, N, D] ! (L = layers, KV = key/value, B = batch, H = heads, N = num tokens, D = dim)
                 'cache_lengths': cached_kvs['cache_lengths'],
-                'cache': cached_kvs['cache']
+                'cache': cached_kvs['cache'],
+                'next_sentence_pred': cached_kvs['next_sentence_pred']
             } if exists(cached_kvs) else None
 
         
@@ -274,6 +284,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                     prev_fetch = prev_fetch[sb_idxs]
                     prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
                     prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
+                    prev_states['next_sentence_pred'] = prev_states['next_sentence_pred'][prev_fetch]
                     if args.shift_states:
                         top_states = prev_states['cache'][-1][None]
                         new_states = torch.cat([prev_states['cache'], top_states])
@@ -285,27 +296,36 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 
                 tokens = add_bos(tokens, bos_token_id=1) if using_bos else tokens # add bos only if this is the first sub-batch
                 targets = tokens.clone()
-                targets[:, :-1] = tokens[:, 1:]
-              
-                eos_id = -100 if not args.bos_eos else 1
-               
-                targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
-                mask = token_lens_to_mask(token_lens)
 
-                targets = mark_padding(targets, mask, pad_id=-100)
-                
-                logits, interim_posteriors, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, sep=sep)
-                
-                if targets.sum() != -100:
-                    loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
-                    interim_loss = intermediate_loss(loss_ce, interim_posteriors, targets)
-                    loss = interim_loss * INTERPOLATE + loss * (1 - INTERPOLATE) if exists(interim_loss) else loss
-                    total_sub_batch_lengths += token_lens.sum()
-                    total_sub_batch_loss += loss * token_lens.sum() 
+                if not exists(prev_states):
+                    targets[:, :-1] = tokens[:, 1:]
+                    eos_id = 1
+                    targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
+                    mask = token_lens_to_mask(token_lens)
+                    targets = mark_padding(targets, mask, pad_id=-100)
+                else:
+                    # concat zero vector to end of targets
+                    targets = torch.cat([targets, torch.zeros(targets.size(0), 1, device=targets.device, dtype=targets.dtype)], dim=1)
+                    eos_id = 1
+                    targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens+1)
+                    mask = token_lens_to_mask(token_lens+1)
+                    targets = mark_padding(targets, mask, pad_id=-100)
+
+                 
+                logits, _, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, sep=sep) 
+
+                if exists(prev_states):
+                    logits = torch.cat([prev_states['next_sentence_pred'], logits], dim=1)
+                    
+                loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
+
+                total_sub_batch_lengths += token_lens.sum()
+                total_sub_batch_loss += loss * token_lens.sum() 
   
                 prev_states = { # cache is [L, KV, B, H, N, D] ! (L = layers, KV = key/value, B = batch, H = heads, N = num tokens, D = dim)
                     'cache_lengths': cached_kvs['cache_lengths'],
-                    'cache': cached_kvs['cache'] # only keep states from the "gold" hypothesis
+                    'cache': cached_kvs['cache'], # only keep states from the "gold" hypothesis
+                    'next_sentence_pred': cached_kvs['next_sentence_pred'].clone()
                 } if exists(cached_kvs) else None
 
 
@@ -338,7 +358,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
 
 
 def load_csv(path): 
-    return pd.read_csv(path, low_memory=False, nrows=1000000)
+    return pd.read_csv(path, low_memory=False)
 
 def main(args):
 

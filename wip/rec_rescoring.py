@@ -37,12 +37,13 @@ from tqdm import tqdm
 import wandb
 from torch.cuda.amp import GradScaler   
 from torch_ema import ExponentialMovingAverage
-import json
-from typing import List, Dict, Tuple, Union, Optional
-import pandas as pd
 
 INTERPOLATE = 0.5
 
+def get_edit_distance(hyps, target): # THIS ISN'T RIGHT
+    return list(map(lambda x: distance(x, target) / (len(target)+1), hyps))
+
+flatten_nested_list = lambda l: [item for sublist in l for item in sublist]
     
 def tokenize_and_pad(utterances, tokenizer): # returns padded utterances and their lengths
     tokenized = [tokenizer.text_to_ids(utt) for utt in utterances]
@@ -51,20 +52,22 @@ def tokenize_and_pad(utterances, tokenizer): # returns padded utterances and the
     return padded_utts, np.array(list(map(len, tokenized)))
 
 def get_sub_batches(batch, tokenizer):  
-    proc_utts = lambda utts: tokenize_and_pad(utts, tokenizer)
+    proc_utts = lambda utts: tokenize_and_pad(flatten_nested_list(utts), tokenizer)
     sub_batches = []
     max_len = max(map(len, batch))
     for i in range(max_len):
-        sub_batches.append({'utterances': [],'sb_lengths': []})
+        sub_batches.append({'utterances': [],'scores': [],'sb_lengths': [], 'durations': []})
         for el in batch:
             case = len(el) > i
             sub_batches[-1]['utterances'].append(el[i][0] if case else -1)
-            sub_batches[-1]['sb_lengths'].append(len(el[i]) if case else -1)
+            sub_batches[-1]['scores'].append(el[i][1] if case else -1)
+            sub_batches[-1]['sb_lengths'].append(len(el[i][0]) if case else -1)
+            sub_batches[-1]['durations'].append(el[i][2] if case else -1)
      
     non_empty_indices = np.arange(len(sub_batches[0]['sb_lengths']))
 
     for i, sub_batch in enumerate(sub_batches):
-        sb_utts, sb_lengths = [np.array(el, dtype=object) for el in (sub_batch['utterances'], sub_batch['sb_lengths'])]
+        sb_utts, sb_scores, sb_lengths, sb_durations = [np.array(el, dtype=object) for el in (sub_batch['utterances'], sub_batch['scores'], sub_batch['sb_lengths'], sub_batch['durations'])]
         non_empty = non_empty_indices[sb_lengths != -1]
         # slice based on non empty of previous sub batch
         prev_fetch = None
@@ -76,7 +79,9 @@ def get_sub_batches(batch, tokenizer):
             
         sub_batches[i] = {
             'utterances': sb_utts,
+            'scores': sb_scores,
             'sb_lengths': sb_lengths,
+            'durations': sb_durations,
             'non_empty': non_empty,
             'prev_fetch': prev_fetch 
         }
@@ -86,6 +91,8 @@ def get_sub_batches(batch, tokenizer):
         sub_batches[i] = {
             'utterances': torch.as_tensor(padded_utts),
             'lengths': torch.as_tensor(acc_lengths),
+            'scores': torch.tensor(flatten_nested_list((sub_batch['scores'][sub_batch['non_empty']]).tolist())),
+            'durations': torch.tensor(sub_batch['durations'][sub_batch['non_empty']].astype(float)).to(torch.float32),
             'sb_lengths': torch.as_tensor(sub_batch['sb_lengths'][sub_batch['non_empty']].astype(int)),
             'prev_fetch': torch.as_tensor(sub_batch['prev_fetch']) if sub_batch['prev_fetch'].__class__.__name__ != 'NoneType' else None# indices to fetch the states from previous sub batch
         }
@@ -93,52 +100,56 @@ def get_sub_batches(batch, tokenizer):
 
 
     
-def create_samples_from_recording(recording:List[str], num_utterances):
-    samples = [[]]
-    for i, sentence in enumerate(recording):
-        if type(sentence) != str:
-            return False
+def create_samples_from_recording(recording, num_utterances, num_negatives, max_gap=10.0, shuffle=True):
+    samples = []
+    prev_end = None
+    if shuffle == False:
+        np.random.seed(42) # deterministic selection of negatives
+    for i, utterance in enumerate(recording):
+        start_t, end_t = utterance['meta_data']['timings'].values()
+        duration = end_t - start_t
+        if prev_end is None or (start_t - prev_end) > max_gap:
+            samples.append([]) 
         if len(samples[-1]) >= num_utterances:
             samples.append([])
+        hyps = utterance['beams'][0]
+        hyps = list(map(lambda x: x['text'], list(hyps.values())))
+        target = utterance['targets'][0]
+        if target == '':
+            continue
+        hyps = list(filter(lambda el:el != target, hyps))
+        hyps = np.random.choice(hyps, min(num_negatives, len(hyps)), replace=False).tolist()
+        examples = [target] + hyps
         
-        samples[-1].append(([sentence]))
+        error_rates = get_edit_distance(examples, target)
+        samples[-1].append((examples, error_rates, duration))
+        prev_end = end_t
+
     return samples
 
-
-
-def create_dataset_samples(recordings, num_utterances, shuffle=True):
+def create_dataset_samples(recordings, num_utterances, num_negatives, max_gap=10.0, shuffle=True):
     samples = []
-    episodes =  recordings['parent_id'].unique().tolist()
-    episode_text = {ep: [] for ep in episodes}
-    for entry in tqdm(recordings.itertuples(), desc='Collecting text'):
-        episode_text[entry.parent_id].append(entry.text)
-    for episode in tqdm(episodes, desc='Creating samples'):
-        rec = create_samples_from_recording(episode_text[episode], num_utterances)
-        if rec is not False:
-            samples += rec
+    for recording in recordings.keys():
+        samples += create_samples_from_recording(recordings[recording], num_utterances, num_negatives, max_gap, shuffle)
     if shuffle:
-        np.random.shuffle(samples)
+        np.random.shuffle(samples) # shuffle samples
     return samples
 
 
 class Sampler(object):
-    def __init__(self, samples, batch_size, tokenizer, shuffle=True, split_into_splits=30):
+    def __init__(self, samples, batch_size, tokenizer, shuffle=True):
         self.samples = samples
         self.batch_size = batch_size
         self.tokenizer = tokenizer
         self.shuffle = shuffle
         self.sample_indices = np.arange(len(self.samples))
         np.random.shuffle(self.sample_indices) if self.shuffle else None
-        self.cur_split = 0
-        self.split_into_splits = split_into_splits
-        self.samples_indice_splits = np.array_split(self.sample_indices, self.split_into_splits)
-        
 
         self.generator = self.__generator__() 
 
     def __generator__(self): 
-        for i in range(0, len(self.samples_indice_splits[self.cur_split]), self.batch_size):
-            yield get_sub_batches([self.samples[i] for i in self.samples_indice_splits[self.cur_split][i:i+self.batch_size]], self.tokenizer)
+        for i in range(0, len(self.samples), self.batch_size):
+            yield get_sub_batches([self.samples[i] for i in self.sample_indices[i:i+self.batch_size]], self.tokenizer)
 
     def __list__(self):
         return list(self.generator)
@@ -147,18 +158,10 @@ class Sampler(object):
         return self
 
     def __len__(self):
-        return len(self.samples_indice_splits[self.cur_split]) // self.batch_size
+        return len(self.samples) // self.batch_size
 
     def __next__(self):
         return next(self.generator)
-
-    def step(self):
-        self.cur_split += 1
-        self.generator = self.__generator__()
-        if self.cur_split >= self.split_into_splits:
-            print(f'FINISHED FULL EPOCH WOOOO')
-            return True
-
       
 '''
     sb_idxs = torch.arange(sb_lengths.size(0))
@@ -171,7 +174,7 @@ class Sampler(object):
 @torch.no_grad()
 def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
     model.eval()
-    #val_dataloader = list(val_dataloader)
+    val_dataloader = list(val_dataloader)
     pbar = tqdm(val_dataloader, total=len(val_dataloader))
     losses = []
     print('Evaluation epoch')
@@ -184,6 +187,7 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
             #print(f'sub_batch {ix+1} / {len(batch)}')
 
             prev_fetch, sb_lengths = sub_batch['prev_fetch'], sub_batch['sb_lengths']
+            durations = sub_batch['durations'][:,None] if args.length_prediction else None
             
             tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
     
@@ -199,35 +203,33 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
                     prev_states['cache'] = new_states[1:] # shift states down by 1
             
             using_bos = not exists(prev_states) or args.bos_eos
-            sep = exists(prev_states)
             token_lens += 1 if using_bos else 0 # add 1 for bos if using
-        
-            tokens = add_bos(tokens, bos_token_id=1) if using_bos else tokens # add bos only if this is the first sub-batch
+            tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
             targets = tokens.clone()
-            targets[:, :-1] = tokens[:, 1:]
-            eos_id = -100 if not args.bos_eos else 1
-           
-            targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
+            targets[:, :-1] = tokens[:, 1:] # shift 
+            eos_id = -100 if not args.bos_eos else 0
 
-            mask = token_lens_to_mask(token_lens)
-            targets = mark_padding(targets, mask, pad_id=-100)
-            
-            logits, _, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, sep=sep)
+            logits, _, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, durations=durations, sep=exists(prev_states))
 
-            if targets.sum() != -100: # edge case
+            if targets.size(1) > 0:
+                targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
+                mask = token_lens_to_mask(token_lens)
+                targets = mark_padding(targets, mask, pad_id=-100)
+
                 loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
+
                 total_lengths += token_lens.sum().item()
                 total_sb_losses.append(loss.item() * token_lens.sum().item())
-            
+                
+                target_positions = sb_lengths.cumsum(dim=0) - sb_lengths # get the first position of each sub-batch
             
             prev_states = { # cache is [L, KV, B, H, N, D] ! (L = layers, KV = key/value, B = batch, H = heads, N = num tokens, D = dim)
-                'cache_lengths': cached_kvs['cache_lengths'],
-                'cache': cached_kvs['cache']
+                'cache_lengths': cached_kvs['cache_lengths'][target_positions],
+                'cache': cached_kvs['cache'][:, :, target_positions] # only keep states from the "gold" hypothesis (teacher forcing)
             } if exists(cached_kvs) else None
 
-        
         losses.append(sum(total_sb_losses) / total_lengths)
-
+  
         if sanity_check:
             return True
 
@@ -249,7 +251,7 @@ def intermediate_loss(loss_fn, interim_logits, targets):
 
 def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None):
     model.train()
-    #train_dataloader = list(train_dataloader)
+    train_dataloader = list(train_dataloader)
     pbar = tqdm(train_dataloader, total=len(train_dataloader))
     losses = []
     loss_iterim = []
@@ -265,9 +267,11 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True) 
 
                 tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
+                durations = sub_batch['durations'][:,None] if args.length_prediction else None
                 prev_fetch, sb_lengths = sub_batch['prev_fetch'], sub_batch['sb_lengths'] # scores are negative for the softmax
                 sb_starts = sb_lengths.cumsum(dim=0) - sb_lengths 
 
+           
                 if exists(prev_states) and exists(prev_fetch): # prev fetch is a list of indices that are present in the current sub-batch 
                     sb_idxs = torch.arange(sb_lengths.size(0))
                     sb_idxs = torch.cat([sb_idxs[ix].repeat(sb_lengths[ix]) for ix in range(sb_lengths.size(0))]).to(device)
@@ -280,32 +284,31 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                         prev_states['cache'] = new_states[1:] # shift states down by 1
         
                 using_bos = not exists(prev_states) or args.bos_eos
-                sep = exists(prev_states) 
                 token_lens += 1 if using_bos else 0 # add 1 for bos if using
-                
-                tokens = add_bos(tokens, bos_token_id=1) if using_bos else tokens # add bos only if this is the first sub-batch
+                tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
                 targets = tokens.clone()
-                targets[:, :-1] = tokens[:, 1:]
-              
-                eos_id = -100 if not args.bos_eos else 1
-               
-                targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
-                mask = token_lens_to_mask(token_lens)
 
-                targets = mark_padding(targets, mask, pad_id=-100)
+                logits, interim_posteriors, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, durations=durations, sep=exists(prev_states))
+                # get indices where targets mean is -100 (all padding), and remove those from logits and targets
                 
-                logits, interim_posteriors, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, sep=sep)
-                
-                if targets.sum() != -100:
+                targets[:, :-1] = tokens[:, 1:] # shift 
+                eos_id = -100 if not args.bos_eos else 0
+                if targets.size(1) > 0:
+                    targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
+                    mask = token_lens_to_mask(token_lens)
+                    targets = mark_padding(targets, mask, pad_id=-100)
+
                     loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
+                    
                     interim_loss = intermediate_loss(loss_ce, interim_posteriors, targets)
                     loss = interim_loss * INTERPOLATE + loss * (1 - INTERPOLATE) if exists(interim_loss) else loss
                     total_sub_batch_lengths += token_lens.sum()
                     total_sub_batch_loss += loss * token_lens.sum() 
-  
+    
+                target_positions = sb_starts
                 prev_states = { # cache is [L, KV, B, H, N, D] ! (L = layers, KV = key/value, B = batch, H = heads, N = num tokens, D = dim)
-                    'cache_lengths': cached_kvs['cache_lengths'],
-                    'cache': cached_kvs['cache'] # only keep states from the "gold" hypothesis
+                    'cache_lengths': cached_kvs['cache_lengths'][target_positions],
+                    'cache': cached_kvs['cache'][:, :, target_positions] # only keep states from the "gold" hypothesis
                 } if exists(cached_kvs) else None
 
 
@@ -328,6 +331,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
 
         if args.wandb:
             wandb.log({'train_loss': total_sub_batch_loss, 'lrate': cur_lr})
+
             
     loss_end = sum(losses) / len(losses)
     if args.wandb:
@@ -337,9 +341,6 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
     return loss_end
 
 
-def load_csv(path): 
-    return pd.read_csv(path, low_memory=False, nrows=1000000)
-
 def main(args):
 
     device, config = torch.device(args.device), load_config(args.config)
@@ -347,8 +348,8 @@ def main(args):
     tokenizer = load_tokenizer(model_path=tokenizer_path)
     model = autoload(config=config, tokenizer=tokenizer)
 
-    train_data, dev_data = map(load_csv, [args.train_data, args.dev_data])
-    print(f'Loaded {len(train_data)} train samples and {len(dev_data)} dev samples')
+    get_data = lambda hyp: order_recordings_by_start_time(sort_hypothesis_by_recording(load_pkl(hyp)))
+    train_data, dev_data = get_data(args.train_hyp), get_data(args.dev_hyp)
 
     epoch_prev = 0
     if args.checkpoint != '':
@@ -365,13 +366,15 @@ def main(args):
     val_samples = create_dataset_samples(
         dev_data,
         num_utterances = args.utts_per_sample, 
+        num_negatives = 0,
+        max_gap = args.max_allowed_utterance_gap,
         shuffle = False 
     )
 
     validate_one_epoch(
         args,
         model = model,
-        val_dataloader = Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False, split_into_splits=15),
+        val_dataloader = Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False),
         device = device,
         sanity_check = True
     )
@@ -379,11 +382,12 @@ def main(args):
     train_sample_args = {
         'recordings': train_data,
         'num_utterances': args.utts_per_sample,
+        'num_negatives': 0,
+        'max_gap': args.max_allowed_utterance_gap,
         'shuffle': True,
     }
-    train_sampler = Sampler(create_dataset_samples(**train_sample_args), batch_size=args.batch_size, tokenizer=tokenizer, shuffle=True, split_into_splits=400)
 
-    ema = ExponentialMovingAverage(model.parameters(), decay=0.99999) 
+    ema = ExponentialMovingAverage(model.parameters(), decay=0.9999) 
     scaler = GradScaler() if args.mixed_precision else None
 
     run_config = {'run_args': args.__dict__, 'model_config': config, 'total_params': total_params}
@@ -397,14 +401,13 @@ def main(args):
     results = {}
     saved_checkpoints = []
     for epoch_ in range(args.epochs): # todo move epoch loop to model utils as is consistent across model types
-        try: # for cuda out of memory errors
+        try:
             epoch = epoch_ + epoch_prev
             #train_dataloader.sampler.set_epoch(epoch)
 
-            
             # args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None
             loss = train_one_epoch(args, epoch, model, optim, schedular, # create new train samples each epoch so the negatives change
-                train_dataloader=train_sampler,
+                train_dataloader=Sampler(create_dataset_samples(**train_sample_args), batch_size=args.batch_size, tokenizer=tokenizer, shuffle=True),
                 device=device, 
                 scaler=scaler, 
                 ema=ema
@@ -423,7 +426,7 @@ def main(args):
                 vloss = validate_one_epoch(
                     args,
                     model, 
-                    Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False, split_into_splits=600), 
+                    Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False), 
                     device, 
                     sanity_check=False
                 )
@@ -459,27 +462,18 @@ def main(args):
                 saved_checkpoints.sort(key=lambda x: x['vloss'])
                 to_remove = saved_checkpoints.pop()
                 os.remove(to_remove['path']) 
-
         except RuntimeError as e:
             if str(e).startswith('CUDA out of memory'):
-                print('): CUDA out of memory!!!! trying to recover ); \n Please download more GPUs')
+                print('CUDA out of memory, trying to recover')
                 torch.cuda.empty_cache()
-                model = model.to(device)
                 continue
-            else:
-                raise e
-
-        finished = train_sampler.step()
-        if finished:
-            print('FINISHED TRAINING -- EXITING')
-            break
             
             
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--train_data', type=str, default='/store/store1/data/open_subtitles_normalised/train.csv')
-    parser.add_argument('--dev_data', type=str, default='/store/store1/data/open_subtitles_normalised/dev.csv')
+    parser.add_argument('--train_hyp', type=str, required=True)
+    parser.add_argument('--dev_hyp', type=str, required=True)
     parser.add_argument('-utts','--utts_per_sample', type=int, default=5)
     parser.add_argument('-batch','--batch_size', type=int, default=3)
     parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=10.0, help='max allowed gap between utterances in seconds')
