@@ -1,0 +1,211 @@
+alpha_range: [0.0, 1.5], beta_range: [-0.1, 1.0] Initialising beam search...
+alpha: 0.06444082407562274, beta: 0.7003930984399644
+WER: 0.22313209050684674 w/ alpha: 0.06444082407562274, beta: 0.7003930984399644
+alpha: 0.4443771141132445, beta: 0.44926102289402936
+WER: 0.20750938410887662 w/ alpha: 0.4443771141132445, beta: 0.44926102289402936
+alpha: 1.3057537763711267, beta: 0.3109508960398385
+WER: 0.2247363012980477 w/ alpha: 1.3057537763711267, beta: 0.3109508960398385
+alpha: 1.272725901454193, beta: 0.08935280640285606
+WER: 0.22514521777423616 w/ alpha: 1.272725901454193, beta: 0.08935280640285606
+alpha: 0.9030824295573863, beta: 0.3271605490996756
+WER: 0.2160022647681758 w/ alpha: 0.9030824295573863, beta: 0.3271605490996756
+alpha: 0.3560494405496862, beta: 0.686635408187197
+WER: 0.20762471952523748 w/ alpha: 0.3560494405496862, beta: 0.686635408187197
+alpha: 0.9654180197995619, beta: -0.08179262563076353
+WER: 0.2201753098328685 w/ alpha: 0.9654180197995619, beta: -0.08179262563076353
+alpha: 0.2648344026505453, beta: 0.46556905015098526
+WER: 0.20896680437016377 w/ alpha: 0.2648344026505453, beta: 0.46556905015098526
+alpha: 0.5147511290328273, beta: 0.17930317966210882
+WER: 0.20876758865099504 w/ alpha: 0.5147511290328273, beta: 0.17930317966210882
+alpha: 1.1098170060942012, beta: 0.7600338101292015
+WER: 0.21799442195986327 w/ alpha: 1.1098170060942012, beta: 0.7600338101292015
+alpha: 0.5952176561418443, beta: 0.8387444140935415
+WER: 0.20788684547151215 w/ alpha: 0.5952176561418443, beta: 0.8387444140935415
+alpha: 1.2362988602584792, beta: 0.34265482050287177
+WER: 0.22335227630171745 w/ alpha: 1.2362988602584792, beta: 0.34265482050287177
+alpha: 1.4782023234609922, beta: 0.3396170460486868
+WER: 0.22777696227483382 w/ alpha: 1.4782023234609922, beta: 0.3396170460486868
+alpha: 1.199055729317422, beta: 0.33290177993500925
+WER: 0.22262880868999937 w/ alpha: 1.199055729317422, beta: 0.33290177993500925
+alpha: 1.4385136142915977, beta: 0.2295189256997102
+WER: 0.22759871663136705 w/ alpha: 1.4385136142915977, beta: 0.2295189256997102
+alpha: 0.861666824798998, beta: 0.678130908558112
+alpha_range: [0.44, 0.44], beta_range: [0.44, 0.44] Initialising beam search...
+alpha: 0.44, beta: 0.44
+alpha_range: [0.44, 0.44], beta_range: [0.44, 0.44] Initialising beam search...
+alpha: 0.44, beta: 0.44
+WER: 0.20740453373036677 w/ alpha: 0.44, beta: 0.44
+alpha: 0.44, beta: 0.44
+alpha_range: [0.44, 0.44], beta_range: [0.44, 0.44] Initialising beam search...
+alpha: 0.44, beta: 0.44
+WER: 0.206429425210225 w/ alpha: 0.44, beta: 0.44
+alpha: 0.44, beta: 0.44
+alpha_range: [0.44, 0.44], beta_range: [0.44, 0.44] Initialising beam search...
+alpha: 0.44, beta: 0.44
+WER: 0.20585274812842075 w/ alpha: 0.44, beta: 0.44
+alpha: 0.44, beta: 0.44
+alpha_range: [0.44, 0.44], beta_range: [0.44, 0.44] Initialising beam search...
+alpha: 0.44, beta: 0.44
+WER: 0.20564304737140102 w/ alpha: 0.44, beta: 0.44
+alpha: 0.44, beta: 0.44
+alpha_range: [0.3, 0.7], beta_range: [0.3, 0.6] Initialising beam search...
+alpha: 0.43710704224347285, beta: 0.5286560383350536
+alpha_range: [0.3, 0.7], beta_range: [0.3, 0.6] Initialising beam search...
+alpha: 0.31351875669211676, beta: 0.4963629579789658
+WER: 0.20716337785979408 w/ alpha: 0.31351875669211676, beta: 0.4963629579789658
+alpha: 0.35737945900583395, beta: 0.3251041460621289
+WER: 0.20610438903684442 w/ alpha: 0.35737945900583395, beta: 0.3251041460621289
+alpha: 0.31735991609920633, beta: 0.4939151296581057
+WER: 0.20696416214062532 w/ alpha: 0.31735991609920633, beta: 0.4939151296581057
+alpha: 0.5749802189066324, beta: 0.48532691235675557
+WER: 0.20614632918824838 w/ alpha: 0.5749802189066324, beta: 0.48532691235675557
+alpha: 0.5298471325030388, beta: 0.5335393443553947
+WER: 0.2060414788097385 w/ alpha: 0.5298471325030388, beta: 0.5335393443553947
+alpha: 0.35897079435591445, beta: 0.5178487160295989
+WER: 0.20598905362048356 w/ alpha: 0.35897079435591445, beta: 0.5178487160295989
+alpha: 0.4643624624474132, beta: 0.41857445929199527
+WER: 0.20547528676578522 w/ alpha: 0.4643624624474132, beta: 0.41857445929199527
+alpha: 0.5679457468001834, beta: 0.3175364157717767
+WER: 0.20649233543733092 w/ alpha: 0.5679457468001834, beta: 0.3175364157717767
+alpha: 0.35221920083197317, beta: 0.49526791860999364
+WER: 0.20610438903684442 w/ alpha: 0.35221920083197317, beta: 0.49526791860999364
+alpha: 0.5538951897125348, beta: 0.5424332078799156
+WER: 0.20594711346907962 w/ alpha: 0.5538951897125348, beta: 0.5424332078799156
+alpha: 0.6542013911091089, beta: 0.424122133420458
+WER: 0.20716337785979408 w/ alpha: 0.6542013911091089, beta: 0.424122133420458
+alpha: 0.3506329595660352, beta: 0.4582560786962564
+WER: 0.20609390399899344 w/ alpha: 0.3506329595660352, beta: 0.4582560786962564
+alpha: 0.572214884275176, beta: 0.4055096779072767
+WER: 0.2062826346803112 w/ alpha: 0.572214884275176, beta: 0.4055096779072767
+alpha: 0.43263161053731153, beta: 0.5001111265482827
+WER: 0.2051921907438086 w/ alpha: 0.43263161053731153, beta: 0.5001111265482827
+alpha: 0.6578518093976177, beta: 0.4751855465791164
+WER: 0.20701658732988026 w/ alpha: 0.6578518093976177, beta: 0.4751855465791164
+alpha: 0.6130116265899117, beta: 0.5590136265713812
+alpha_range: [0.3, 0.7], beta_range: [0.35, 0.7] Initialising beam search...
+alpha: 0.4827859415820145, beta: 0.6468707615032305
+WER: 0.20512928051670268 w/ alpha: 0.4827859415820145, beta: 0.6468707615032305
+alpha: 0.356176139076247, beta: 0.4970039311387008
+WER: 0.205653532409252 w/ alpha: 0.356176139076247, beta: 0.4970039311387008
+alpha: 0.38701446918705323, beta: 0.4629436217211721
+WER: 0.20511879547885167 w/ alpha: 0.38701446918705323, beta: 0.4629436217211721
+alpha: 0.366725347468996, beta: 0.4911529099814782
+WER: 0.2054123765386793 w/ alpha: 0.366725347468996, beta: 0.4911529099814782
+alpha: 0.6687828249668041, beta: 0.3822434738255865
+alpha_range: [0.3, 0.75], beta_range: [0.3, 0.75] Initialising beam search...
+alpha: 0.475253980544196, beta: 0.5117054578948887
+WER: 0.2053494663115734 w/ alpha: 0.475253980544196, beta: 0.5117054578948887
+alpha: 0.7297330272534757, beta: 0.7134564849386914
+WER: 0.2077715100551513 w/ alpha: 0.7297330272534757, beta: 0.7134564849386914
+alpha: 0.5686745326460827, beta: 0.6218324048922759
+WER: 0.2057374127120599 w/ alpha: 0.5686745326460827, beta: 0.6218324048922759
+alpha: 0.6468911977540635, beta: 0.43988005642513883
+WER: 0.2070690125191352 w/ alpha: 0.6468911977540635, beta: 0.43988005642513883
+alpha: 0.6819893814694865, beta: 0.6112498472982408
+WER: 0.20707949755698618 w/ alpha: 0.6819893814694865, beta: 0.6112498472982408
+alpha: 0.38825421780026603, beta: 0.4973021612190901
+WER: 0.2055696521064441 w/ alpha: 0.38825421780026603, beta: 0.4973021612190901
+alpha: 0.49103005856122883, beta: 0.31093772500710304
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4325932351778449, beta: 0.5
+WER: 0.2051921907438086 w/ alpha: 0.4325932351778449, beta: 0.5
+alpha: 0.43259195592030103, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43260691601333184, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43260787833856756, beta: 0.5
+WER: 0.18975749627686767 w/ alpha: 0.43260787833856756, beta: 0.5
+alpha: 0.4326088639979108, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4326051427762496, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4326086540747453, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4325943268059462, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4325998000037078, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4326011622699951, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4325993656817896, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43260998093778025, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43259593236078, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.432607393438508, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43259038801631633, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43259373085889, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4326073072700837, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4326022811418749, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43259923500924036, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4325968132518183, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43259505002657883, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43260063006821803, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43260458448549244, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43260186022188724, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43260678383320494, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43259403369245186, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43259175349043916, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43260991251269815, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4325973322908354, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43260247592395795, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43260092824072943, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4325927443456402, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4325991428891977, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43260395052501316, beta: 0.5
+WER: 0.9950876881015359 w/ alpha: 0.43260395052501316, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43260611736462956, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43259139352530146, beta: 0.5
+WER: 0.997410478116873 w/ alpha: 0.43259139352530146, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4325974951434051, beta: 0.5
+WER: 0.997410478116873 w/ alpha: 0.4325974951434051, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4326031267235562, beta: 0.5
+WER: 0.28771929824561404 w/ alpha: 0.4326031267235562, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.432594419463245, beta: 0.5
+WER: 0.7333333333333333 w/ alpha: 0.432594419463245, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.432604273860468, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4325967967466085, beta: 0.5
+WER: 0.28771929824561404 w/ alpha: 0.4325967967466085, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4326018375139014, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4326060044446819, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43260766069328915, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43260062275194283, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.43259782412900805, beta: 0.5
+WER: 0.18750138922847806 w/ alpha: 0.43259782412900805, beta: 0.5
+alpha_range: [0.43259, 0.43261], beta_range: [0.5, 0.5] Initialising beam search...
+alpha: 0.4325926141900717, beta: 0.5
+WER: 0.18777923492409257 w/ alpha: 0.4325926141900717, beta: 0.5

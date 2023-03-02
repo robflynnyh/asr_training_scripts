@@ -115,8 +115,7 @@ def main(args):
             last_logit = None
             print('resetting cache', recording_id != prev_recording_id, start_t - prev_end, '\n\n\n\n')
 
- 
-        cache = trim_cache(cache, 1750) ###
+        cache = trim_cache(cache, args.max_cache)
 
         if len(text) == 0:
             prev_end = end_t
@@ -141,10 +140,13 @@ def main(args):
         logits, _, cached_states = model(x=tokens, length=token_lens, cache=cache, sep=exists(cache))
         cache = cached_states
 
-        last_logit_ = logits[:, -1, None, :].clone()
+        if args.no_sep:
+            last_logit_ = logits[:, -1, None, :].clone()
+        else:
+            last_logit_ = cache['next_sentence_pred']
 
         if exists(last_logit):
-            logits = torch.cat([last_logit, logits[:, :-1]], dim=1)
+            logits = torch.cat([last_logit, logits[:, :-1]], dim=1) 
         
         prev_end = end_t
         last_logit = last_logit_
@@ -170,7 +172,10 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19_sep_token.yaml')
+    parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19_sep_token_ted_am.yaml')
+    parser.add_argument('--max_cache', type=int, default=1000)
+
+    parser.add_argument('--no_sep', action='store_true')
 
     parser.add_argument('--device', type=str, default='auto')
     parser.add_argument('--max_gpu_duration', type=float, default=-1)
@@ -178,7 +183,7 @@ if __name__ == '__main__':
     parser.add_argument('--token_level', action='store_true')
     parser.add_argument('--split', type=str, default='test')
     
-    parser.add_argument('--checkpoint', type=str, default='./checkpoints/open_sub_ft_ted/pg19opensub_ft_tedlium_checkpoint_186_id_51.pt')
+    parser.add_argument('--checkpoint', type=str, default='./checkpoints/open_sub_ft_ted/ft_ted_checkpoint_1259_id_36.pt')
     args = parser.parse_args()
 
     if args.device == 'auto':

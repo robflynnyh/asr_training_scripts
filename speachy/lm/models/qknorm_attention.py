@@ -465,9 +465,7 @@ class transformer_lm(nn.Module):
         if stage == 'token':
             if 'durations' in kwargs and hasattr(self, 'length_predictor') and exists(self.length_predictor):
                 x[:,0] = self.length_predictor(kwargs['durations']) + x[:,0]
-            if hasattr(self, 'sep_token') and exists(cache):
-                if not kwargs.get('sep', False):
-                    raise Warning('Model uses seperator token, please pass sep=True when cache is passed') 
+            if hasattr(self, 'sep_token') and exists(cache) and kwargs.get('sep', False):
                 x = torch.cat([repeat(self.sep_token, '() d -> b () d', b=x.shape[0]), x], dim=1)
                 length = length + 1 if exists(length) else None
         if stage == 'logits':

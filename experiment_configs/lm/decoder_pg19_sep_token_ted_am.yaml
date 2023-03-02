@@ -3,7 +3,7 @@ dataset: 'TED'
 
 model:
   tokenizer:
-    dir: "./lm/tokenizers/tokenizer_spe_bpe_v1500/" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
+    dir: "./tedlium/tokenizers/tokenizer_spe_bpe_v128/" # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
     type: bpe  # has to be bpe (u have no choice)
   
   modeltype: qknorm_shared
@@ -25,3 +25,5 @@ model:
     add_ons:
       sep_token:
         dim: 256
+      next_sentence_pred:
+        dim: 'vocab'

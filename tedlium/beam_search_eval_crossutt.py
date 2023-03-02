@@ -104,38 +104,41 @@ def delete_pickle(path):
 class argsclass():
     def __init__(self, args:Dict): self.__dict__.update(args)
 
-'''@ray.remote(num_gpus=0, num_cpus=1)
-def run_search(beam_fn, logps, alpha, beta):
-    search = beam_fn(log_probs=logps, alpha=alpha, beta=beta)
-    search.run_search(use_tqdm=False)
-    return search.return_text(0)'''
+
 
 @ray.remote(num_gpus=1, num_cpus=1)
 def run_search_meeting(meeting, id, beam_fn, alpha, beta, randomly_verbose=False, max_gap=100000000):
-    search = beam_fn(log_probs=meeting[0]['probs'], alpha=alpha, repitition_penalty=beta, blank_penalty=beta)
+    search = beam_fn(log_probs=meeting[0]['probs'], alpha=alpha, beta=beta)
     prev_end = None
-    text_out = ""
+    
     for i, _ in tqdm(enumerate(meeting), total=len(meeting)):
         #print(f'Utterance {i+1}/{len(meeting)}')
         start_t, end_t = meeting[i]['meta_data']['timings'].values()
         search.run_search(use_tqdm=False)
         print(search.return_text(0)) if randomly_verbose and random.random() < 0.05 else None # print 5% of the time lol
         if i < len(meeting)-1:
+            search.next_utterance(new_log_probs=meeting[i+1]['probs'])
             if prev_end is None or (start_t - prev_end) < max_gap:
                 search.next_utterance(new_log_probs=meeting[i+1]['probs'])
             else:
                 print('RESETTING HISORY')
-                text_out = text_out.strip() + ' ' + search.return_text(0).strip()
-                search = beam_fn(log_probs=meeting[i+1]['probs'], alpha=alpha, repitition_penalty=beta, blank_penalty=beta)
+                lm_probs, state = search.language_model.get_initial_state()
+                search.beams = [search.beams[0]] # take the best beam
+                search.beams[0].state = state # reset the state
+                search.beams[0].next_lm_token_lps = lm_probs # reset the language model probs
+                if search.beams[0].am_sequence[-1] != search.blank_id:
+                    search.beams[0].am_sequence.append(search.blank_id) # prevent collapse across utterances
+                    
         prev_end = end_t
-    text_out = text_out.strip() + ' ' + search.return_text(0).strip()
-    return {'id':id, 'text':text_out.strip()}
+    #text_out = text_out.strip() + ' ' + search.return_text(0).strip()
+
+    return {'id':id, 'text':search.return_text(0)}
 
 def get_target_hyp_pairs(hyp_data, hyps):
     hyp_lst, targets = [], []
     for output in hyps:
         k, txt = output['id'], output['text']
-        target = " ".join(el['targets'][0].strip() for el in hyp_data[k])
+        target = " ".join(el['targets'][0].strip() for el in hyp_data[k][:15])
         hyp_lst.append(txt.strip())
         targets.append(target)
     return hyp_lst, targets
@@ -151,7 +154,6 @@ def main(args):
     print('\nTrainable parameters:'+str(sum(p.numel() for p in model.parameters() if p.requires_grad)))
     print(f'Total parameters: {sum(p.numel() for p in model.parameters())}\n')
     corpus_dict = tools.load_corpus()
-  
 
     config = speachy.utils.general.load_config('../experiment_configs/lm/decoder_pg19_sep_token_ted_am.yaml')
     tokenizer_path = '.'+os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
@@ -180,13 +182,13 @@ def main(args):
 
     num_meetings = len(dev_hyps.keys())
 
-    alpha_range = [0.65, 1.2]
-    blank_penalty = [0.2, -0.2]
+    alpha_range = [0.7]
+    beta_penalty = [0.0]
 
-    write_to_log('beam_search_log.txt', f'alpha_range: {alpha_range}, beta_range: {blank_penalty} Initialising beam search...')
+    write_to_log('beam_search_log.txt', f'alpha_range: {alpha_range}, beta_range: {beta_penalty} Initialising beam search...')
     
     ray.init(num_cpus=20, num_gpus=1)
-    
+    cutoff = -6
     beamsearch_fn = partial(
         BeamSearch, 
         language_model=LanguageModel(
@@ -196,28 +198,28 @@ def main(args):
             half_precision=True if torch.cuda.is_available() else False
         ),
         tokenizer=tokenizer, 
-        beam_width=10,
+        beam_width=25,
         blank_id=128,
-        top_am_threshold=-6,
-        max_cache_length = 1000,
+        top_am_threshold=cutoff,
+        max_cache_length = 500,
         debug=False
     )
     beamsearch_fn = ray.put(beamsearch_fn) # put beamsearch_fn on the ray object store so that it can be accessed by the remote function
     # select random sample of dev hyps (10%)
     # runs same random seed
-    random.seed(42)
+    random.seed(52)
     dev_hyps_sample = dev_hyps 
     # select only 1 of the meetings (key)
     k = random.choice(list(dev_hyps_sample.keys()))
     dev_hyps_sample = {k:dev_hyps_sample[k]}
     while True:
-        alpha = np.random.uniform(*alpha_range)
-        blank = np.random.uniform(*blank_penalty)
-        write_to_log('beam_search_log.txt', f'alpha: {alpha}, blank: {blank}')
+        alpha = np.random.choice(alpha_range)
+        beta = np.random.choice(beta_penalty)
+        write_to_log('beam_search_log.txt', f'alpha: {alpha}, beta: {beta}')
   
         meetings = list(dev_hyps_sample.values())
         names = list(dev_hyps_sample.keys())
-        outputs = [run_search_meeting.remote(meeting, name, beamsearch_fn, alpha, blank, randomly_verbose=True, max_gap=args.max_allowed_utterance_gap) for meeting, name in zip(meetings, names)]
+        outputs = [run_search_meeting.remote(meeting[:15], name, beamsearch_fn, alpha, beta, randomly_verbose=True, max_gap=args.max_allowed_utterance_gap) for meeting, name in zip(meetings, names)]
         outputs = ray.get(outputs)
 
         predictions, targets = get_target_hyp_pairs(dev_hyps_sample, outputs)
@@ -227,8 +229,9 @@ def main(args):
 
         wer = word_error_rate(hypotheses=predictions, references=targets)
         print(f'WER: {wer}')
-        write_to_log('beam_search_log.txt', f'WER: {wer} w/ alpha: {alpha}, blank: {blank}')
-        #exit()
+     
+        write_to_log('beam_search_log.txt', f'WER: {wer} w/ alpha: {alpha}, beta: {beta}, cutoff: {cutoff}')
+        exit()
 
 
         
@@ -274,7 +277,7 @@ if __name__ == '__main__':
 
     parser.add_argument('-nsc','--not_self_conditioned', action='store_true', help='use for non self-conditioned models')
 
-    parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=-1.0, help='max allowed gap between utterances in seconds')
+    parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=10.0, help='max allowed gap between utterances in seconds')
 
 
     parser.add_argument('-gap','--gap', default=0.1, type=float, help='gap between utterances when concatenating')

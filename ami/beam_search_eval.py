@@ -103,8 +103,8 @@ class argsclass():
     def __init__(self, args:Dict): self.__dict__.update(args)
 
 @ray.remote(num_gpus=0, num_cpus=1)
-def run_search(beam_fn, logps, alpha, beta, blank, repeat):
-    search = beam_fn(log_probs=logps, alpha=alpha, beta=beta, repitition_penalty=repeat, blank_penalty=blank)
+def run_search(beam_fn, logps, alpha, beta):
+    search = beam_fn(log_probs=logps, alpha=alpha, beta=beta)
     search.run_search(use_tqdm=False)
     return search.return_text(0)
 
@@ -121,12 +121,12 @@ def main(args):
     corpus_dict = tools.load_corpus()
   
 
-    config = speachy.utils.general.load_config('../experiment_configs/lm/decoder_pg19_sep_token_ted_am.yaml')
+    config = speachy.utils.general.load_config('../experiment_configs/lm/decoder_pg19_sep_token.yaml')
     tokenizer_path = '.'+os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
     tokenizer = speachy.utils.general.load_tokenizer(tokenizer_path)
     lm_model = speachy.lm.tools.loading.autoload(config=config, tokenizer=tokenizer)
     _,_ = speachy.utils.general.load_checkpoint(
-        args = argsclass({'checkpoint':'../checkpoints/open_sub_ft_ted/ft_ted_checkpoint_1259_id_36.pt'}),
+        args = argsclass({'checkpoint':'../checkpoints/open_sub_ft_ami/128subword_ami_opensub_802_78.pt'}),
         model = lm_model,
         force_cpu = True
     )
@@ -138,57 +138,47 @@ def main(args):
         dev_stage, dev_hyps = load_pickle(os.path.join(args.tmp_dir, temp_name_dev))
 
     if dev_stage == None:
-        dev_hyps = get_logits(args, model, corpus_dict['dev'])
+        dev_hyps = get_logits(args, model, corpus_dict['test'])
         save_pickle(os.path.join(args.tmp_dir, temp_name_dev), dev_hyps, stage='logits')
         dev_stage = 'logits'
         
     del model
-    ''' alpha_range = [0.7179439598313802, 0.7179439598313802]
-    beta_range = [0.0, 0.0]
-    blank_penalty = [0.0024788043463895605, 0.0024788043463895605]
-    repeat_penalty = [0.0, 0.0]'''
-
-    alpha_range = [0.7]
-    beta_range = [0.0]
-    blank_penalty = [0.0, 0.0]
- 
-#WER: 0.09739429968331574 w/ alpha: 0.7179439598313802, beta: 0.0, blank: 0.0024788043463895605 repeat: 0.0024788043463895605 top_am_threshold: -5
+    alpha_range = [0.43259, 0.43261]
+    beta_range = [0.5, 0.50000000000000001]
 
     write_to_log('beam_search_log.txt', f'alpha_range: {alpha_range}, beta_range: {beta_range} Initialising beam search...')
     
-
-    ray.init(num_cpus=25, num_gpus=0)
     
-    top_am_threshold = -6
+    ray.init(num_cpus=40, num_gpus=0)
+    
     beamsearch_fn = partial(
         BeamSearch, 
         language_model=LanguageModel(model=lm_model, bos_id=0, device='cuda' if torch.cuda.is_available() else 'cpu'),
         tokenizer=tokenizer, 
         beam_width=25,
         blank_id=128,
-        top_am_threshold=top_am_threshold,
+        blank_penalty=0.0,
+        repitition_penalty=0.0,
+        top_am_threshold=-5,
         debug=False
     )
     beamsearch_fn = ray.put(beamsearch_fn) # put beamsearch_fn on the ray object store so that it can be accessed by the remote function
     # select random sample of dev hyps (10%)
     # runs same random seed
-    random.seed(52)
-    #dev_hyps_sample = random.sample(dev_hyps, int(len(dev_hyps)*0.25))
+    random.seed(42)
+    #dev_hyps_sample = #random.sample(dev_hyps, int(len(dev_hyps)*0.05))
     dev_hyps_sample = dev_hyps
     while True:
-        alpha = np.random.choice(alpha_range)
-        beta = np.random.choice(beta_range)
-        blank = 0
-        repeat = blank
-        #repeat = np.random.uniform(*repeat_penalty)
-        #write_to_log('beam_search_log.txt', f'alpha: {alpha}, beta: {beta}, blank: {blank}, top_am_threshold: {top_am_threshold}')
+        alpha = np.random.uniform(*alpha_range)
+        beta = np.random.uniform(*beta_range)
+        write_to_log('beam_search_log.txt', f'alpha: {alpha}, beta: {beta}')
         # split dev_hyps into batches/chunks of 20 
         # then run beam search on each chunk
-        chunksize = 500
+        chunksize = 250
         batches = [dev_hyps_sample[i:i+chunksize] for i in range(0, len(dev_hyps_sample), chunksize)]
 
         for batch in tqdm(batches):
-            futures = [run_search.remote(beamsearch_fn, hyp['probs'], alpha, beta, blank, repeat) for hyp in batch]
+            futures = [run_search.remote(beamsearch_fn, hyp['probs'], alpha, beta) for hyp in batch]
             results = ray.get(futures)
             for hyp, result in zip(batch, results):
                 hyp['prediction'] = result
@@ -201,7 +191,13 @@ def main(args):
         targets = [hyp['targets'][0] for hyp in dev_hyps_sample]
         wer = word_error_rate(hypotheses=predictions, references=targets)
         print(f'WER: {wer}')
-        write_to_log('beam_search_log.txt', f'WER: {wer} w/ alpha: {alpha}, beta: {beta}, blank: {blank} repeat: {repeat} top_am_threshold: {top_am_threshold}')
+        write_to_log('beam_search_log.txt', f'WER: {wer} w/ alpha: {alpha}, beta: {beta}')
+
+
+        
+    #save_pickle(os.path.join(args.tmp_dir, args.load_tmp+'_devBEAM.pkl'), dev_hyps, stage='finished')
+
+
 
 '''' old
     for hyp in tqdm(dev_hyps):
@@ -214,13 +210,20 @@ def main(args):
 '''
     
 
+
+#Best fp_alpha: 0.9, beta: 0.7, sp_alpha: 0.6, unk_offset: -18, wer: 0.09889438302127895 (beam 1000)
+
+
+
+
 if __name__ == '__main__':
     ''''
     Note I've only written this for a batch size of 1 (lazy)
     '''
     parser = argparse.ArgumentParser() 
 
-    parser.add_argument('-load_tmp', '--load_tmp', default='ted_dev.pkl', type=str, help='base name of logit hyp to load (full name = split+_+name')
+
+    parser.add_argument('-load_tmp', '--load_tmp', default='', type=str, help='base name of logit hyp to load (full name = split+_+name')
     parser.add_argument('-tmp_dir','--tmp_dir', type=str, default='./tmp', help='path to tmp dir')
 
     parser.add_argument('-log_beta', '--log_beta', action='store_true', help='whether to use log scale for beta length penalty')

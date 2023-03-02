@@ -34,6 +34,8 @@ from functools import partial
 import ray
 import random
 
+from speachy.rescoring.tools import sort_hypothesis_by_recording, order_recordings_by_start_time
+
 
 @torch.no_grad()
 def get_logits(args, model, corpus):
@@ -102,11 +104,31 @@ def delete_pickle(path):
 class argsclass():
     def __init__(self, args:Dict): self.__dict__.update(args)
 
-@ray.remote(num_gpus=0, num_cpus=1)
-def run_search(beam_fn, logps, alpha, beta, blank, repeat):
-    search = beam_fn(log_probs=logps, alpha=alpha, beta=beta, repitition_penalty=repeat, blank_penalty=blank)
+'''@ray.remote(num_gpus=0, num_cpus=1)
+def run_search(beam_fn, logps, alpha, beta):
+    search = beam_fn(log_probs=logps, alpha=alpha, beta=beta)
     search.run_search(use_tqdm=False)
-    return search.return_text(0)
+    return search.return_text(0)'''
+
+@ray.remote(num_gpus=0, num_cpus=1)
+def run_search_meeting(meeting, id, beam_fn, alpha, beta, randomly_verbose=False):
+    search = beam_fn(log_probs=meeting[0]['probs'], alpha=alpha, beta=beta)
+    for i, _ in tqdm(enumerate(meeting), total=len(meeting)):
+        #print(f'Utterance {i+1}/{len(meeting)}')
+        search.run_search(use_tqdm=False)
+        print(search.return_text(0)) if randomly_verbose and random.random() < 0.05 else None # print 5% of the time lol
+        if i < len(meeting)-1:
+            search.next_utterance(new_log_probs=meeting[i+1]['probs'])
+    return {'id':id, 'text':search.return_text(0)}
+
+def get_target_hyp_pairs(hyp_data, hyps):
+    hyp_lst, targets = [], []
+    for output in hyps:
+        k, txt = output['id'], output['text']
+        target = " ".join(el['targets'][0].strip() for el in hyp_data[k])
+        hyp_lst.append(txt.strip())
+        targets.append(target)
+    return hyp_lst, targets
 
 def write_to_log(log_path, text):
     with open(log_path, 'a') as f:
@@ -121,12 +143,12 @@ def main(args):
     corpus_dict = tools.load_corpus()
   
 
-    config = speachy.utils.general.load_config('../experiment_configs/lm/decoder_pg19_sep_token_ted_am.yaml')
+    config = speachy.utils.general.load_config('../experiment_configs/lm/decoder_pg19_sep_token.yaml')
     tokenizer_path = '.'+os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
     tokenizer = speachy.utils.general.load_tokenizer(tokenizer_path)
     lm_model = speachy.lm.tools.loading.autoload(config=config, tokenizer=tokenizer)
     _,_ = speachy.utils.general.load_checkpoint(
-        args = argsclass({'checkpoint':'../checkpoints/open_sub_ft_ted/ft_ted_checkpoint_1259_id_36.pt'}),
+        args = argsclass({'checkpoint':'../checkpoints/open_sub_ft_ami/128subword_ami_opensub_802_78.pt'}),
         model = lm_model,
         force_cpu = True
     )
@@ -141,78 +163,68 @@ def main(args):
         dev_hyps = get_logits(args, model, corpus_dict['dev'])
         save_pickle(os.path.join(args.tmp_dir, temp_name_dev), dev_hyps, stage='logits')
         dev_stage = 'logits'
-        
     del model
-    ''' alpha_range = [0.7179439598313802, 0.7179439598313802]
-    beta_range = [0.0, 0.0]
-    blank_penalty = [0.0024788043463895605, 0.0024788043463895605]
-    repeat_penalty = [0.0, 0.0]'''
 
-    alpha_range = [0.7]
-    beta_range = [0.0]
-    blank_penalty = [0.0, 0.0]
- 
-#WER: 0.09739429968331574 w/ alpha: 0.7179439598313802, beta: 0.0, blank: 0.0024788043463895605 repeat: 0.0024788043463895605 top_am_threshold: -5
+    dev_hyps = sort_hypothesis_by_recording(dev_hyps)
+    dev_hyps = order_recordings_by_start_time(dev_hyps)
+
+    num_meetings = len(dev_hyps.keys())
+
+    alpha_range = [0.43259, 0.43261]
+    beta_range = [0.5, 0.50000000000000001]
 
     write_to_log('beam_search_log.txt', f'alpha_range: {alpha_range}, beta_range: {beta_range} Initialising beam search...')
     
-
-    ray.init(num_cpus=25, num_gpus=0)
+    ray.init(num_cpus=20, num_gpus=0)
     
-    top_am_threshold = -6
     beamsearch_fn = partial(
         BeamSearch, 
-        language_model=LanguageModel(model=lm_model, bos_id=0, device='cuda' if torch.cuda.is_available() else 'cpu'),
+        language_model=LanguageModel(
+            model=lm_model, 
+            bos_id=0, 
+            device='cuda' if torch.cuda.is_available() else 'cpu',
+            half_precision=True if torch.cuda.is_available() else False
+        ),
         tokenizer=tokenizer, 
         beam_width=25,
         blank_id=128,
-        top_am_threshold=top_am_threshold,
+        blank_penalty=0.0,
+        repitition_penalty=0.0,
+        top_am_threshold=-5,
+        max_cache_length = 1500,
         debug=False
     )
     beamsearch_fn = ray.put(beamsearch_fn) # put beamsearch_fn on the ray object store so that it can be accessed by the remote function
     # select random sample of dev hyps (10%)
     # runs same random seed
-    random.seed(52)
-    #dev_hyps_sample = random.sample(dev_hyps, int(len(dev_hyps)*0.25))
+    random.seed(42)
     dev_hyps_sample = dev_hyps
     while True:
-        alpha = np.random.choice(alpha_range)
-        beta = np.random.choice(beta_range)
-        blank = 0
-        repeat = blank
-        #repeat = np.random.uniform(*repeat_penalty)
-        #write_to_log('beam_search_log.txt', f'alpha: {alpha}, beta: {beta}, blank: {blank}, top_am_threshold: {top_am_threshold}')
-        # split dev_hyps into batches/chunks of 20 
-        # then run beam search on each chunk
-        chunksize = 500
-        batches = [dev_hyps_sample[i:i+chunksize] for i in range(0, len(dev_hyps_sample), chunksize)]
+        alpha = np.random.uniform(*alpha_range)
+        beta = np.random.uniform(*beta_range)
+        write_to_log('beam_search_log.txt', f'alpha: {alpha}, beta: {beta}')
+  
+        meetings = list(dev_hyps_sample.values())
+        names = list(dev_hyps_sample.keys())
+        outputs = [run_search_meeting.remote(meeting, name, beamsearch_fn, alpha, beta, randomly_verbose=True) for meeting, name in zip(meetings, names)]
+        outputs = ray.get(outputs)
 
-        for batch in tqdm(batches):
-            futures = [run_search.remote(beamsearch_fn, hyp['probs'], alpha, beta, blank, repeat) for hyp in batch]
-            results = ray.get(futures)
-            for hyp, result in zip(batch, results):
-                hyp['prediction'] = result
-                print(hyp['prediction'])
-                print(hyp['targets'][0])
-                print('')
-          
+        predictions, targets = get_target_hyp_pairs(dev_hyps_sample, outputs)
 
-        predictions = [hyp['prediction'] for hyp in dev_hyps_sample]
-        targets = [hyp['targets'][0] for hyp in dev_hyps_sample]
+        with open('pred_tst.pkl', 'wb') as f:
+            pkl.dump({'pred':predictions, 'targets':targets}, f)
+
         wer = word_error_rate(hypotheses=predictions, references=targets)
         print(f'WER: {wer}')
-        write_to_log('beam_search_log.txt', f'WER: {wer} w/ alpha: {alpha}, beta: {beta}, blank: {blank} repeat: {repeat} top_am_threshold: {top_am_threshold}')
+        write_to_log('beam_search_log.txt', f'WER: {wer} w/ alpha: {alpha}, beta: {beta}')
+        exit()
 
-'''' old
-    for hyp in tqdm(dev_hyps):
-        lps = hyp['probs']
-        beamsearch = beamsearch_fn(log_probs=lps)
-        beamsearch.run_search(tqdm=False)
-        hyp['prediction'] = beamsearch.return_text(0) # top beam
-        print(hyp['prediction'])
-        print(hyp['targets'])
-'''
-    
+
+        
+    #save_pickle(os.path.join(args.tmp_dir, args.load_tmp+'_devBEAM.pkl'), dev_hyps, stage='finished')
+
+
+
 
 if __name__ == '__main__':
     ''''
@@ -220,7 +232,10 @@ if __name__ == '__main__':
     '''
     parser = argparse.ArgumentParser() 
 
-    parser.add_argument('-load_tmp', '--load_tmp', default='ted_dev.pkl', type=str, help='base name of logit hyp to load (full name = split+_+name')
+
+
+
+    parser.add_argument('-load_tmp', '--load_tmp', default='ami.pkl', type=str, help='base name of logit hyp to load (full name = split+_+name')
     parser.add_argument('-tmp_dir','--tmp_dir', type=str, default='./tmp', help='path to tmp dir')
 
     parser.add_argument('-log_beta', '--log_beta', action='store_true', help='whether to use log scale for beta length penalty')
@@ -263,7 +278,6 @@ if __name__ == '__main__':
 
     parser.add_argument('-psl','--pass_segment_lengths', action='store_true', help='if set, will pass segment lens to the model, used with concat_samples for multi segment models')
     parser.add_argument('-save','--save_outputs', default='', type=str, help='save outputs to file')
-    parser.add_argument('-dropout', '--dropout_rate', help='dropout at inference', default=0.0, type=float)
 
     args = parser.parse_args()
 
