@@ -106,22 +106,26 @@ class argsclass():
 
 
 
-@ray.remote(num_gpus=1, num_cpus=1)
-def run_search_meeting(meeting, id, beam_fn, alpha, beta, randomly_verbose=False, max_gap=100000000):
+@ray.remote(num_gpus=0, num_cpus=1)
+def run_search_meeting(meeting, id, beam_fn, alpha, beta, randomly_verbose=False, max_gap=100000000, teacher_forcing=False):
     search = beam_fn(log_probs=meeting[0]['probs'], alpha=alpha, beta=beta)
     prev_end = None
-    
+    prev_cache = None
     for i, _ in tqdm(enumerate(meeting), total=len(meeting)):
         #print(f'Utterance {i+1}/{len(meeting)}')
         start_t, end_t = meeting[i]['meta_data']['timings'].values()
         search.run_search(use_tqdm=False)
-        print(search.return_text(0)) if randomly_verbose and random.random() < 0.05 else None # print 5% of the time lol
+        print(search.return_text(0)) if randomly_verbose and random.random() < 0.1 else None # print 5% of the time lol
+
         if i < len(meeting)-1:
             search.next_utterance(new_log_probs=meeting[i+1]['probs'])
             if prev_end is None or (start_t - prev_end) < max_gap:
-                search.next_utterance(new_log_probs=meeting[i+1]['probs'])
+                target = meeting[i]['targets'][0] if teacher_forcing else None
+                search.next_utterance(new_log_probs=meeting[i+1]['probs'], teacher_forcing=target, prev_cache=prev_cache)
+                prev_cache = {k:v.clone() for k,v in search.beams[0].state.items()} if teacher_forcing else None
             else:
                 print('RESETTING HISORY')
+                prev_cache = None
                 lm_probs, state = search.language_model.get_initial_state()
                 search.beams = [search.beams[0]] # take the best beam
                 search.beams[0].state = state # reset the state
@@ -138,7 +142,7 @@ def get_target_hyp_pairs(hyp_data, hyps):
     hyp_lst, targets = [], []
     for output in hyps:
         k, txt = output['id'], output['text']
-        target = " ".join(el['targets'][0].strip() for el in hyp_data[k][:15])
+        target = " ".join(el['targets'][0].strip() for el in hyp_data[k])
         hyp_lst.append(txt.strip())
         targets.append(target)
     return hyp_lst, targets
@@ -187,7 +191,7 @@ def main(args):
 
     write_to_log('beam_search_log.txt', f'alpha_range: {alpha_range}, beta_range: {beta_penalty} Initialising beam search...')
     
-    ray.init(num_cpus=20, num_gpus=1)
+    ray.init(num_cpus=40, num_gpus=0)
     cutoff = -6
     beamsearch_fn = partial(
         BeamSearch, 
@@ -207,11 +211,11 @@ def main(args):
     beamsearch_fn = ray.put(beamsearch_fn) # put beamsearch_fn on the ray object store so that it can be accessed by the remote function
     # select random sample of dev hyps (10%)
     # runs same random seed
-    random.seed(52)
+    random.seed(36)
     dev_hyps_sample = dev_hyps 
     # select only 1 of the meetings (key)
-    k = random.choice(list(dev_hyps_sample.keys()))
-    dev_hyps_sample = {k:dev_hyps_sample[k]}
+    #k = random.choice(list(dev_hyps_sample.keys()))
+    #dev_hyps_sample = {k:dev_hyps_sample[k]}
     while True:
         alpha = np.random.choice(alpha_range)
         beta = np.random.choice(beta_penalty)
@@ -219,7 +223,17 @@ def main(args):
   
         meetings = list(dev_hyps_sample.values())
         names = list(dev_hyps_sample.keys())
-        outputs = [run_search_meeting.remote(meeting[:15], name, beamsearch_fn, alpha, beta, randomly_verbose=True, max_gap=args.max_allowed_utterance_gap) for meeting, name in zip(meetings, names)]
+        outputs = [
+            run_search_meeting.remote(
+                meeting, 
+                name, 
+                beamsearch_fn, 
+                alpha, 
+                beta, 
+                randomly_verbose=True, 
+                max_gap=args.max_allowed_utterance_gap,
+                teacher_forcing=args.teacher_forcing
+            ) for meeting, name in zip(meetings, names)]
         outputs = ray.get(outputs)
 
         predictions, targets = get_target_hyp_pairs(dev_hyps_sample, outputs)
@@ -246,7 +260,9 @@ if __name__ == '__main__':
     '''
     parser = argparse.ArgumentParser() 
 
-    parser.add_argument('-load_tmp', '--load_tmp', default='ted_dev.pkl', type=str, help='base name of logit hyp to load (full name = split+_+name')
+    parser.add_argument('--teacher_forcing', action='store_true', help='whether to use teacher forcing')
+
+    parser.add_argument('-load_tmp', '--load_tmp', default='ted_test.pkl', type=str, help='base name of logit hyp to load (full name = split+_+name')
     parser.add_argument('-tmp_dir','--tmp_dir', type=str, default='./tmp', help='path to tmp dir')
 
     parser.add_argument('-log_beta', '--log_beta', action='store_true', help='whether to use log scale for beta length penalty')

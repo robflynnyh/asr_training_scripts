@@ -1,12 +1,12 @@
 echo '<<< TRAINING AUTOREGRESSIVE TLM >>>'
 
-python rec_rescoring.py --checkpoint 'checkpoint_316_id_46_opensub_unigram.pt' \
-    --train_hyp 'train_ami.pkl' \
-    --dev_hyp 'dev_ami.pkl' \
-    --checkpoint_dir './checkpoints/open_sub_ft_ami/' \
-    --config './experiment_configs/lm/decoder_pg19_sep_token_ami_vocab.yaml' \
-    --min_lr 1e-6 \
-    --max_lr 5e-5 \
+python rec_rescoring_augment_v2.py --checkpoint '128sw_openspeach_cp_1256_id_12.pt' \
+    --train_hyp 'train.pkl' \
+    --dev_hyp 'dev.pkl' \
+    --checkpoint_dir './checkpoints/open_sub_ft_ted/' \
+    --config './experiment_configs/lm/decoder_pg19_sep_token_ted_am.yaml' \
+    --min_lr 2e-5 \
+    --max_lr 1.155e-4 \
     --step_size 35 \
     --clip_gradients \
     --clip_gradients_value 15 \
@@ -14,8 +14,8 @@ python rec_rescoring.py --checkpoint 'checkpoint_316_id_46_opensub_unigram.pt' \
     --wandb_id '' \
     --save_top_k 1 \
     --schedular_data './pg191kwftpd90.json' \
-    --utts 30 \
-    -batch 10  \
+    --utts 16 \
+    -batch 15  \
 
     
 

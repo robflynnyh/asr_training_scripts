@@ -57,7 +57,7 @@ class LanguageModel():
         assert self.bos_id == 0, "written assuming bos_id is 0 ):"
     
     def logits_to_lprobs(self,logits):
-        logits = logits[:,:,1:] / self.temperature if self.temperature != 1.0 else logits[:,:,1:] 
+        logits = logits[:,:,1:]  / self.temperature if self.temperature != 1.0 else logits[:,:,1:]  
         return logits.log_softmax(dim=-1)
 
     @torch.no_grad()
@@ -125,7 +125,7 @@ class BeamSearch():
             blank_id=128,
             blank_penalty=0.0, # additional penalty for blank
             repitition_penalty=0.0, # additional penalty for repitition
-            top_am_threshold=40, # top am scores to consider
+            top_am_threshold=-6, # top am scores to consider
             max_cache_length = -1, # max length of cache to keep in memory
             debug=False
         ):
@@ -189,22 +189,31 @@ class BeamSearch():
                 self.beam_dict[beam_str] = beam
         return list(self.beam_dict.values())
 
-    def next_utterance(self, new_log_probs):
+    def next_utterance(self, new_log_probs, teacher_forcing=None, prev_cache=None):
         ''' update beams with new utterance (next utterance in a dialogue)'''
         self.log_probs = new_log_probs
         self.position = 0 # reset position
         self.beams = [self.beams[0]] # only keep best beam
-        ''''c = self.language_model.logits_to_lprobs(
+        
+        '''logps, state = self.language_model.get_initial_state()
+        self.beams[0].state = state
+        self.beams[0].next_lm_token_lps = logps'''
+
+        if exists(teacher_forcing): # think something is wrong here
+            if not exists(prev_cache):
+                _, prev_cache = self.language_model.get_initial_state()
+            tokens = self.tokenizer.text_to_ids(teacher_forcing)
+            token_lens = torch.tensor([len(tokens)])
+            tokens = torch.tensor(tokens)[None]
+            _, cache = self.language_model(input_ids=tokens, input_lengths=token_lens, states=prev_cache)
+            self.beams[0].state = cache
+        
+        self.beams[0].next_lm_token_lps = self.language_model.logits_to_lprobs(
                         self.beams[0].state['next_sentence_pred'].squeeze()[None,None,:]
                     ).squeeze()
-        print(c)'''
-        '''for beam in self.beams:
-            beam.next_lm_token_lps = self.language_model.logits_to_lprobs(
-                beam.state['next_sentence_pred'].squeeze()[None,None,:]
-            ).squeeze()
-            if beam.am_sequence[-1] != self.blank_id:
-                beam.am_sequence.append(self.blank_id) # prevent collapse across utterances'''
-            #print(beam.next_lm_token_lps.shape)
+
+        if self.beams[0].am_sequence[-1] != self.blank_id:
+            self.beams[0].am_sequence.append(self.blank_id) # prevent collapse across utterances
         self.language_model.apply_sep_token(beams=self.beams)
 
 
@@ -257,12 +266,6 @@ class BeamSearch():
         
         for beam in self.beams: # this is main bottleneck
             beam_lm_probs = beam.next_lm_token_lps
-            '''non_blank_top_am_indices = top_am_indices[(top_am_indices - 1) < 127]
-            if len(non_blank_top_am_indices) != 0:
-                beam_lm_probs[non_blank_top_am_indices-1] = torch.nn.functional.softmax(
-                    beam_lm_probs[non_blank_top_am_indices-1] / 10.0,
-                    dim=-1
-                )'''
                 
             #beam_lm_probs[top_am_indices-1] = torch.nn.functional.log_softmax(beam_lm_probs[top_am_indices-1], dim=-1)
             beam_lm_probs = beam_lm_probs * self.alpha + self.beta

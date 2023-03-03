@@ -143,7 +143,7 @@ def main(args):
     corpus_dict = tools.load_corpus()
   
 
-    config = speachy.utils.general.load_config('../experiment_configs/lm/decoder_pg19_sep_token.yaml')
+    config = speachy.utils.general.load_config('../experiment_configs/lm/decoder_pg19_sep_token_ami.yaml')
     tokenizer_path = '.'+os.path.join(config['model']['tokenizer']['dir'], 'tokenizer.model')
     tokenizer = speachy.utils.general.load_tokenizer(tokenizer_path)
     lm_model = speachy.lm.tools.loading.autoload(config=config, tokenizer=tokenizer)

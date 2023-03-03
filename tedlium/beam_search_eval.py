@@ -126,7 +126,7 @@ def main(args):
     tokenizer = speachy.utils.general.load_tokenizer(tokenizer_path)
     lm_model = speachy.lm.tools.loading.autoload(config=config, tokenizer=tokenizer)
     _,_ = speachy.utils.general.load_checkpoint(
-        args = argsclass({'checkpoint':'../checkpoints/open_sub_ft_ted/ft_ted_checkpoint_1259_id_36.pt'}),
+        args = argsclass({'checkpoint':'../checkpoints/open_sub_ft_ted/ft_ted_checkpoint_1259_id_36.pt'}), #ft_ted_checkpoint_1259_id_36
         model = lm_model,
         force_cpu = True
     )
@@ -148,16 +148,17 @@ def main(args):
     blank_penalty = [0.0024788043463895605, 0.0024788043463895605]
     repeat_penalty = [0.0, 0.0]'''
 
-    alpha_range = [0.7]
-    beta_range = [0.0]
-    blank_penalty = [0.0, 0.0]
- 
+    alpha_range = [0.5, 0.55, 0.60, 0.68, 0.75]
+    beta_range = [0.0, 0.05]
+    blank_penalty = [0.0]
+    
+    combinations = []
 #WER: 0.09739429968331574 w/ alpha: 0.7179439598313802, beta: 0.0, blank: 0.0024788043463895605 repeat: 0.0024788043463895605 top_am_threshold: -5
 
     write_to_log('beam_search_log.txt', f'alpha_range: {alpha_range}, beta_range: {beta_range} Initialising beam search...')
     
 
-    ray.init(num_cpus=25, num_gpus=0)
+    ray.init(num_cpus=40, num_gpus=0)
     
     top_am_threshold = -6
     beamsearch_fn = partial(
@@ -176,8 +177,17 @@ def main(args):
     #dev_hyps_sample = random.sample(dev_hyps, int(len(dev_hyps)*0.25))
     dev_hyps_sample = dev_hyps
     while True:
-        alpha = np.random.choice(alpha_range)
-        beta = np.random.choice(beta_range)
+        found_params = False
+        while not found_params:
+            alpha = np.random.choice(alpha_range)
+            beta = np.random.choice(beta_range)
+            seq = f'alpha: {alpha}, beta: {beta}'
+            if seq not in combinations:
+                combinations.append(seq)
+                found_params = True
+            else:
+                print('finding new params')
+        
         blank = 0
         repeat = blank
         #repeat = np.random.uniform(*repeat_penalty)

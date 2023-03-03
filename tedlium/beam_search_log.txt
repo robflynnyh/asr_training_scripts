@@ -1,34 +1,5 @@
-WER: 0.08614545454545454 w/ alpha: 0.7, beta: 0.0, blank: 0 repeat: 0 top_am_threshold: -6
-alpha_range: [0.7], beta_range: [0.0] Initialising beam search...
-WER: 0.09733874104116895 w/ alpha: 0.7, beta: 0.0, blank: 0 repeat: 0 top_am_threshold: -6
-alpha_range: [0.7], beta_range: [0.0] Initialising beam search...
-alpha: 0.7, beta: 0.0
-WER: 0.09778321017834324 w/ alpha: 0.7, beta: 0.0, cutoff: -6
-alpha_range: [0.7], beta_range: [0.0] Initialising beam search...
-alpha: 0.7, beta: 0.0
 
-
-
-
-WER: 0.15064102564102563 w/ alpha: 0.7, beta: 0.0, cutoff: -6 500c
-
-WER: 0.15064102564102563 w/ alpha: 0.7, beta: 0.0, cutoff: -6
+alpha: 0.7, beta: 0.0
+WER: 0.08403636363636363 w/ alpha: 0.7, beta: 0.0, cutoff: -6 TEACHER FORCE 500
 alpha_range: [0.7], beta_range: [0.0] Initialising beam search...
 alpha: 0.7, beta: 0.0
-WER: 0.14903846153846154 w/ alpha: 0.7, beta: 0.0, cutoff: -6
-alpha_range: [0.7], beta_range: [0.0] Initialising beam search...
-alpha: 0.7, beta: 0.0
-WER: 0.14743589743589744 w/ alpha: 0.7, beta: 0.0, cutoff: -6
-alpha_range: [0.7], beta_range: [0.0] Initialising beam search...
-alpha: 0.7, beta: 0.0
-WER: 0.14903846153846154 w/ alpha: 0.7, beta: 0.0, cutoff: -6
-alpha_range: [0.7], beta_range: [0.0] Initialising beam search...
-alpha: 0.7, beta: 0.0
-WER: 0.14743589743589744 w/ alpha: 0.7, beta: 0.0, cutoff: -6
-alpha_range: [0.7], beta_range: [0.0] Initialising beam search...
-alpha: 0.7, beta: 0.0
-alpha_range: [0.7], beta_range: [0.0] Initialising beam search...
-alpha: 0.7, beta: 0.0
-alpha_range: [0.7], beta_range: [0.0] Initialising beam search...
-alpha: 0.7, beta: 0.0
-WER: 0.14583333333333334 w/ alpha: 0.7, beta: 0.0, cutoff: -6

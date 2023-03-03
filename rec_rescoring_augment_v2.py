@@ -45,14 +45,50 @@ def get_edit_distance(hyps, target): # THIS ISN'T RIGHT
 
 flatten_nested_list = lambda l: [item for sublist in l for item in sublist]
     
+class ErrorAugmentation(): # https://arxiv.org/pdf/2009.01008.pdf
+    def __init__(self, insertion_p, substitution_p, deletion_p, corpus_words):
+        assert insertion_p + substitution_p + deletion_p <= 1, 'Augmentation probabilities must sum to less than 1'
+        self.insertion_p = insertion_p
+        self.substitution_p = substitution_p
+        self.deletion_p = deletion_p
+        self.do_nothing_p = 1 - (insertion_p + substitution_p + deletion_p)
+        self.select_action = lambda: np.random.choice(['insert', 'substitute', 'delete', 'do_nothing'], p=[insertion_p, substitution_p, deletion_p, self.do_nothing_p])
+        self.corpus_words = corpus_words
+
+    def drop_letter(self, word): # not used
+        # select random letter to drop
+        drop_idx = np.random.randint(len(word))
+        return word[:drop_idx] + word[drop_idx+1:]
+
+    def augment(self, utterance: str):
+        tokens = utterance.split()
+        augmented_tokens = []
+        for token in [" "] + tokens:
+            action = self.select_action()
+            if action == 'insert':
+                augmented_tokens += [token, np.random.choice(self.corpus_words)]
+            elif action == 'substitute':
+                augmented_tokens += [np.random.choice(self.corpus_words)]
+            elif action == 'delete':
+                continue
+            elif action == 'do_nothing':
+                augmented_tokens += [token]
+        return ' '.join(augmented_tokens).strip()
+
+    def augment_batch(self, batch):
+        return [self.augment(utt) for utt in batch]
+
 def tokenize_and_pad(utterances, tokenizer): # returns padded utterances and their lengths
     tokenized = [tokenizer.text_to_ids(utt) for utt in utterances]
     max_len = max(map(len, tokenized))
     padded_utts = np.array([utt + [0] * (max_len - len(utt)) for utt in tokenized])
     return padded_utts, np.array(list(map(len, tokenized)))
 
-def get_sub_batches(batch, tokenizer):  
-    proc_utts = lambda utts: tokenize_and_pad(flatten_nested_list(utts), tokenizer)
+def get_sub_batches(batch, tokenizer, augmentation_module):  
+    proc_utts = lambda utts, augment=False: tokenize_and_pad(
+        utterances = flatten_nested_list(utts) if not augment else augmentation_module.augment_batch(flatten_nested_list(utts)),
+        tokenizer = tokenizer
+    )
     sub_batches = []
     max_len = max(map(len, batch))
     for i in range(max_len):
@@ -87,9 +123,13 @@ def get_sub_batches(batch, tokenizer):
         }
     
     for i, sub_batch in enumerate(sub_batches):
-        padded_utts, acc_lengths = proc_utts(sub_batch['utterances'][sub_batch['non_empty']].tolist())
+        utts = sub_batch['utterances'][sub_batch['non_empty']].tolist()
+        padded_utts, acc_lengths = proc_utts(utts=utts, augment=False)
+        augmented_utterances, aug_lengths = proc_utts(utts=utts, augment=True)
         sub_batches[i] = {
             'utterances': torch.as_tensor(padded_utts),
+            'augmented_utterances': torch.as_tensor(augmented_utterances),
+            'aug_lengths': torch.as_tensor(aug_lengths), # 'aug_lengths' is the length of the augmented utterance, not the original one
             'lengths': torch.as_tensor(acc_lengths),
             'scores': torch.tensor(flatten_nested_list((sub_batch['scores'][sub_batch['non_empty']]).tolist())),
             'durations': torch.tensor(sub_batch['durations'][sub_batch['non_empty']].astype(float)).to(torch.float32),
@@ -137,7 +177,16 @@ def create_dataset_samples(recordings, num_utterances, num_negatives, max_gap=10
 
 
 class Sampler(object):
-    def __init__(self, samples, batch_size, tokenizer, shuffle=True):
+    def __init__(
+            self, 
+            samples, 
+            batch_size, 
+            tokenizer,
+            insetion_p=0.08,
+            deletion_p=0.10,
+            substitution_p=0.04, 
+            shuffle=True, 
+        ):
         self.samples = samples
         self.batch_size = batch_size
         self.tokenizer = tokenizer
@@ -145,11 +194,28 @@ class Sampler(object):
         self.sample_indices = np.arange(len(self.samples))
         np.random.shuffle(self.sample_indices) if self.shuffle else None
 
+        corpus_words = []
+        for sample in self.samples:
+            text = sample[0][0][0]
+            corpus_words += text.split()
+        self.corpus_words = list(set(corpus_words))
+
+        self.augmentation_module = ErrorAugmentation(
+            insertion_p = insetion_p,
+            deletion_p = deletion_p,
+            substitution_p = substitution_p,
+            corpus_words = self.corpus_words
+        )
+    
         self.generator = self.__generator__() 
 
     def __generator__(self): 
         for i in range(0, len(self.samples), self.batch_size):
-            yield get_sub_batches([self.samples[i] for i in self.sample_indices[i:i+self.batch_size]], self.tokenizer)
+            yield get_sub_batches(
+                batch = [self.samples[i] for i in self.sample_indices[i:i+self.batch_size]], 
+                tokenizer = self.tokenizer,
+                augmentation_module = self.augmentation_module
+            )
 
     def __list__(self):
         return list(self.generator)
@@ -174,7 +240,7 @@ class Sampler(object):
 @torch.no_grad()
 def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
     model.eval()
-    val_dataloader = list(val_dataloader)
+    val_dataloader = val_dataloader
     pbar = tqdm(val_dataloader, total=len(val_dataloader))
     losses = []
     print('Evaluation epoch')
@@ -268,7 +334,7 @@ def intermediate_loss(loss_fn, interim_logits, targets):
 
 def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None):
     model.train()
-    train_dataloader = list(train_dataloader)
+    train_dataloader = train_dataloader #list(tqdm(train_dataloader, total=len(train_dataloader), desc='augmenting data'))
     pbar = tqdm(train_dataloader, total=len(train_dataloader))
     losses = []
     loss_iterim = []
@@ -284,7 +350,9 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True) 
 
                 tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
-                durations = sub_batch['durations'][:,None] if args.length_prediction else None
+                aug_tokens, aug_token_lens = sub_batch['augmented_utterances'], sub_batch['aug_lengths']
+
+                #durations = sub_batch['durations'][:,None] if args.length_prediction else None
                 prev_fetch, sb_lengths = sub_batch['prev_fetch'], sub_batch['sb_lengths'] # scores are negative for the softmax
                 sb_starts = sb_lengths.cumsum(dim=0) - sb_lengths 
 
@@ -303,7 +371,9 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
         
                 using_bos = not exists(prev_states) or args.bos_eos
                 token_lens += 1 if using_bos else 0 # add 1 for bos if using
+                aug_token_lens += 1 if using_bos else 0 # add 1 for bos if using
                 tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
+                aug_tokens = add_bos(aug_tokens, bos_token_id=0) if using_bos else aug_tokens # add bos only if this is the first sub-batch
                 targets = tokens.clone()
 
                 if not exists(prev_states):
@@ -320,11 +390,17 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                     mask = token_lens_to_mask(token_lens+1)
                     targets = mark_padding(targets, mask, pad_id=-100)
 
-                logits, _, cached_kvs = model(
+                logits, _, _ = model(
                     x=tokens, 
                     length=token_lens, 
-                    cache=prev_states, 
-                    durations=durations, 
+                    cache=prev_states,  
+                    sep=exists(prev_states)
+                )
+
+                _, _, cached_kvs = model( # cache comes from augmented history
+                    x=aug_tokens,
+                    length=aug_token_lens,
+                    cache=prev_states,
                     sep=exists(prev_states)
                 )
          
