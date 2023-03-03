@@ -205,7 +205,7 @@ def main(args):
         beam_width=25,
         blank_id=128,
         top_am_threshold=cutoff,
-        max_cache_length = 500,
+        max_cache_length = 1000,
         debug=False
     )
     beamsearch_fn = ray.put(beamsearch_fn) # put beamsearch_fn on the ray object store so that it can be accessed by the remote function

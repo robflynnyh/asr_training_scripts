@@ -45,14 +45,7 @@ def get_edit_distance(hyps, target): # THIS ISN'T RIGHT
 
 flatten_nested_list = lambda l: [item for sublist in l for item in sublist]
     
-def tokenize_and_pad(utterances, tokenizer): # returns padded utterances and their lengths
-    tokenized = [tokenizer.text_to_ids(utt) for utt in utterances]
-    max_len = max(map(len, tokenized))
-    padded_utts = np.array([utt + [0] * (max_len - len(utt)) for utt in tokenized])
-    return padded_utts, np.array(list(map(len, tokenized)))
-
-
-class ErrorAugmentation():
+class ErrorAugmentation(): # https://arxiv.org/pdf/2009.01008.pdf
     def __init__(self, insertion_p, substitution_p, deletion_p, corpus_words):
         assert insertion_p + substitution_p + deletion_p <= 1, 'Augmentation probabilities must sum to less than 1'
         self.insertion_p = insertion_p
@@ -62,10 +55,15 @@ class ErrorAugmentation():
         self.select_action = lambda: np.random.choice(['insert', 'substitute', 'delete', 'do_nothing'], p=[insertion_p, substitution_p, deletion_p, self.do_nothing_p])
         self.corpus_words = corpus_words
 
+    def drop_letter(self, word): # not used
+        # select random letter to drop
+        drop_idx = np.random.randint(len(word))
+        return word[:drop_idx] + word[drop_idx+1:]
+
     def augment(self, utterance: str):
         tokens = utterance.split()
         augmented_tokens = []
-        for token in " " + tokens:
+        for token in [" "] + tokens:
             action = self.select_action()
             if action == 'insert':
                 augmented_tokens += [token, np.random.choice(self.corpus_words)]
@@ -79,6 +77,12 @@ class ErrorAugmentation():
 
     def augment_batch(self, batch):
         return [self.augment(utt) for utt in batch]
+
+def tokenize_and_pad(utterances, tokenizer): # returns padded utterances and their lengths
+    tokenized = [tokenizer.text_to_ids(utt) for utt in utterances]
+    max_len = max(map(len, tokenized))
+    padded_utts = np.array([utt + [0] * (max_len - len(utt)) for utt in tokenized])
+    return padded_utts, np.array(list(map(len, tokenized)))
 
 def get_sub_batches(batch, tokenizer, augmentation_module):  
     proc_utts = lambda utts, augment=False: tokenize_and_pad(
@@ -121,10 +125,11 @@ def get_sub_batches(batch, tokenizer, augmentation_module):
     for i, sub_batch in enumerate(sub_batches):
         utts = sub_batch['utterances'][sub_batch['non_empty']].tolist()
         padded_utts, acc_lengths = proc_utts(utts=utts, augment=False)
-        augmented_utterances, _ = proc_utts(utts=utts, augment=True)
+        augmented_utterances, aug_lengths = proc_utts(utts=utts, augment=True)
         sub_batches[i] = {
             'utterances': torch.as_tensor(padded_utts),
             'augmented_utterances': torch.as_tensor(augmented_utterances),
+            'aug_lengths': torch.as_tensor(aug_lengths), # 'aug_lengths' is the length of the augmented utterance, not the original one
             'lengths': torch.as_tensor(acc_lengths),
             'scores': torch.tensor(flatten_nested_list((sub_batch['scores'][sub_batch['non_empty']]).tolist())),
             'durations': torch.tensor(sub_batch['durations'][sub_batch['non_empty']].astype(float)).to(torch.float32),
@@ -150,6 +155,8 @@ def create_samples_from_recording(recording, num_utterances, num_negatives, max_
         hyps = utterance['beams'][0]
         hyps = list(map(lambda x: x['text'], list(hyps.values())))
         target = utterance['targets'][0]
+        if target == '':
+            continue
         hyps = list(filter(lambda el:el != target, hyps))
         hyps = np.random.choice(hyps, min(num_negatives, len(hyps)), replace=False).tolist()
         examples = [target] + hyps
@@ -175,9 +182,9 @@ class Sampler(object):
             samples, 
             batch_size, 
             tokenizer,
-            insetion_p,
-            deletion_p,
-            substitution_p, 
+            insetion_p=0.08,
+            deletion_p=0.10,
+            substitution_p=0.04, 
             shuffle=True, 
         ):
         self.samples = samples
@@ -191,6 +198,7 @@ class Sampler(object):
         for sample in self.samples:
             text = sample[0][0][0]
             corpus_words += text.split()
+        self.corpus_words = list(set(corpus_words))
 
         self.augmentation_module = ErrorAugmentation(
             insertion_p = insetion_p,
@@ -232,7 +240,7 @@ class Sampler(object):
 @torch.no_grad()
 def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
     model.eval()
-    val_dataloader = list(val_dataloader)
+    val_dataloader = val_dataloader
     pbar = tqdm(val_dataloader, total=len(val_dataloader))
     losses = []
     print('Evaluation epoch')
@@ -255,6 +263,7 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
                 prev_fetch = prev_fetch[sb_idxs]
                 prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
                 prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
+                prev_states['next_sentence_pred'] = prev_states['next_sentence_pred'][prev_fetch]
                 if args.shift_states:
                     top_states = prev_states['cache'][-1][None]
                     new_states = torch.cat([prev_states['cache'], top_states])
@@ -264,13 +273,31 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
             token_lens += 1 if using_bos else 0 # add 1 for bos if using
             tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
             targets = tokens.clone()
-            targets[:, :-1] = tokens[:, 1:] # shift 
-            eos_id = -100 if not args.bos_eos else 0
-            targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
-            mask = token_lens_to_mask(token_lens)
-            targets = mark_padding(targets, mask, pad_id=-100)
+            if not exists(prev_states):
+                targets[:, :-1] = tokens[:, 1:]
+                eos_id = -100
+                targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
+                mask = token_lens_to_mask(token_lens)
+                targets = mark_padding(targets, mask, pad_id=-100)
+            else:
+                # concat zero vector to end of targets
+                targets = torch.cat([targets, torch.zeros(targets.size(0), 1, device=targets.device, dtype=targets.dtype)], dim=1)
+                eos_id = -100
+                targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens+1)
+                mask = token_lens_to_mask(token_lens+1)
+                targets = mark_padding(targets, mask, pad_id=-100)
 
-            logits, _, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, durations=durations, sep=exists(prev_states))
+            logits, _, cached_kvs = model(
+                x=tokens, 
+                length=token_lens, 
+                cache=prev_states, 
+                durations=durations, 
+                sep=exists(prev_states)
+            )
+
+            if exists(prev_states):
+                logits = torch.cat([prev_states['next_sentence_pred'], logits], dim=1)
+
             loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
 
             total_lengths += token_lens.sum().item()
@@ -280,7 +307,8 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
             
             prev_states = { # cache is [L, KV, B, H, N, D] ! (L = layers, KV = key/value, B = batch, H = heads, N = num tokens, D = dim)
                 'cache_lengths': cached_kvs['cache_lengths'][target_positions],
-                'cache': cached_kvs['cache'][:, :, target_positions] # only keep states from the "gold" hypothesis (teacher forcing)
+                'cache': cached_kvs['cache'][:, :, target_positions], # only keep states from the "gold" hypothesis (teacher forcing)
+                'next_sentence_pred': cached_kvs['next_sentence_pred'][target_positions].clone()
             } if exists(cached_kvs) else None
 
         losses.append(sum(total_sb_losses) / total_lengths)
@@ -306,7 +334,7 @@ def intermediate_loss(loss_fn, interim_logits, targets):
 
 def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None):
     model.train()
-    train_dataloader = list(train_dataloader)
+    train_dataloader = train_dataloader #list(tqdm(train_dataloader, total=len(train_dataloader), desc='augmenting data'))
     pbar = tqdm(train_dataloader, total=len(train_dataloader))
     losses = []
     loss_iterim = []
@@ -322,7 +350,9 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True) 
 
                 tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
-                durations = sub_batch['durations'][:,None] if args.length_prediction else None
+                aug_tokens, aug_token_lens = sub_batch['augmented_utterances'], sub_batch['aug_lengths']
+
+                #durations = sub_batch['durations'][:,None] if args.length_prediction else None
                 prev_fetch, sb_lengths = sub_batch['prev_fetch'], sub_batch['sb_lengths'] # scores are negative for the softmax
                 sb_starts = sb_lengths.cumsum(dim=0) - sb_lengths 
 
@@ -333,6 +363,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                     prev_fetch = prev_fetch[sb_idxs]
                     prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
                     prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
+                    prev_states['next_sentence_pred'] = prev_states['next_sentence_pred'][prev_fetch]
                     if args.shift_states:
                         top_states = prev_states['cache'][-1][None]
                         new_states = torch.cat([prev_states['cache'], top_states])
@@ -340,34 +371,53 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
         
                 using_bos = not exists(prev_states) or args.bos_eos
                 token_lens += 1 if using_bos else 0 # add 1 for bos if using
+                aug_token_lens += 1 if using_bos else 0 # add 1 for bos if using
                 tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
+                aug_tokens = add_bos(aug_tokens, bos_token_id=0) if using_bos else aug_tokens # add bos only if this is the first sub-batch
                 targets = tokens.clone()
-                targets[:, :-1] = tokens[:, 1:] # shift 
-                eos_id = -100 if not args.bos_eos else 0
-                targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
-                mask = token_lens_to_mask(token_lens)
-                targets = mark_padding(targets, mask, pad_id=-100)
 
-                logits, interim_posteriors, cached_kvs = model(x=tokens, length=token_lens, cache=prev_states, durations=durations, sep=exists(prev_states))
-                # get indices where targets mean is -100 (all padding), and remove those from logits and targets
-                indices_to_remove = torch.where(targets.mean(dim=1) == -100)[0]
-                # don't remove anything if there are no indices to remove
-                if indices_to_remove.size(0) != 0:
-                    logits = torch.index_select(logits, 0, indices_to_remove)
-                    targets = torch.index_select(targets, 0, indices_to_remove)
+                if not exists(prev_states):
+                    targets[:, :-1] = tokens[:, 1:]
+                    eos_id = -100
+                    targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
+                    mask = token_lens_to_mask(token_lens)
+                    targets = mark_padding(targets, mask, pad_id=-100)
+                else:
+                    # concat zero vector to end of targets
+                    targets = torch.cat([targets, torch.zeros(targets.size(0), 1, device=targets.device, dtype=targets.dtype)], dim=1)
+                    eos_id = -100
+                    targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens+1)
+                    mask = token_lens_to_mask(token_lens+1)
+                    targets = mark_padding(targets, mask, pad_id=-100)
+
+                logits, _, _ = model(
+                    x=tokens, 
+                    length=token_lens, 
+                    cache=prev_states,  
+                    sep=exists(prev_states)
+                )
+
+                _, _, cached_kvs = model( # cache comes from augmented history
+                    x=aug_tokens,
+                    length=aug_token_lens,
+                    cache=prev_states,
+                    sep=exists(prev_states)
+                )
+         
+                if exists(prev_states):
+                    logits = torch.cat([prev_states['next_sentence_pred'], logits], dim=1)
 
                 loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
-                
-                interim_loss = intermediate_loss(loss_ce, interim_posteriors, targets)
-                loss = interim_loss * INTERPOLATE + loss * (1 - INTERPOLATE) if exists(interim_loss) else loss
+           
                 total_sub_batch_lengths += token_lens.sum()
                 total_sub_batch_loss += loss * token_lens.sum() 
-  
-                
+    
                 target_positions = sb_starts
                 prev_states = { # cache is [L, KV, B, H, N, D] ! (L = layers, KV = key/value, B = batch, H = heads, N = num tokens, D = dim)
                     'cache_lengths': cached_kvs['cache_lengths'][target_positions],
-                    'cache': cached_kvs['cache'][:, :, target_positions] # only keep states from the "gold" hypothesis
+                    'cache': cached_kvs['cache'][:, :, target_positions], # only keep states from the "gold" hypothesis
+                    'next_sentence_pred': cached_kvs['next_sentence_pred'][target_positions].clone()
+
                 } if exists(cached_kvs) else None
 
 
@@ -460,66 +510,72 @@ def main(args):
     results = {}
     saved_checkpoints = []
     for epoch_ in range(args.epochs): # todo move epoch loop to model utils as is consistent across model types
-        epoch = epoch_ + epoch_prev
-        #train_dataloader.sampler.set_epoch(epoch)
+        try:
+            epoch = epoch_ + epoch_prev
+            #train_dataloader.sampler.set_epoch(epoch)
 
-        # args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None
-        loss = train_one_epoch(args, epoch, model, optim, schedular, # create new train samples each epoch so the negatives change
-            train_dataloader=Sampler(create_dataset_samples(**train_sample_args), batch_size=args.batch_size, tokenizer=tokenizer, shuffle=True),
-            device=device, 
-            scaler=scaler, 
-            ema=ema
-        )          
+            # args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None
+            loss = train_one_epoch(args, epoch, model, optim, schedular, # create new train samples each epoch so the negatives change
+                train_dataloader=Sampler(create_dataset_samples(**train_sample_args), batch_size=args.batch_size, tokenizer=tokenizer, shuffle=True),
+                device=device, 
+                scaler=scaler, 
+                ema=ema
+            )          
 
-        try: # don't want this to crash if I accidentally delete the schedular config file
-            schedular = update_schedular(args, optim, schedular) # allows changing of min n max learning rate during training
-        except Exception as e:
-            if os.path.exists(args.schedular_data) == False:
-                print('Schedular config file not found, creating new one')
-                save_schedular_data(args)
-            else:
-                print(e, '\n') # todo move all this to update_schedular it looks ugly :P
+            try: # don't want this to crash if I accidentally delete the schedular config file
+                schedular = update_schedular(args, optim, schedular) # allows changing of min n max learning rate during training
+            except Exception as e:
+                if os.path.exists(args.schedular_data) == False:
+                    print('Schedular config file not found, creating new one')
+                    save_schedular_data(args)
+                else:
+                    print(e, '\n') # todo move all this to update_schedular it looks ugly :P
 
-        with ema.average_parameters(): # evaluate using ema of the parameters
-            vloss = validate_one_epoch(
-                args,
-                model, 
-                Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False), 
-                device, 
-                sanity_check=False
-            )
+            with ema.average_parameters(): # evaluate using ema of the parameters
+                vloss = validate_one_epoch(
+                    args,
+                    model, 
+                    Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False), 
+                    device, 
+                    sanity_check=False
+                )
 
-        if args.wandb:
-            wandb.log({'val_loss': vloss, 'epoch': epoch})
+            if args.wandb:
+                wandb.log({'val_loss': vloss, 'epoch': epoch})
 
-        print(f'\n\n\n--- Epoch {epoch}, Validation Loss: {vloss} ---\n\n\n')
-        results[epoch] = {'loss': loss, 'vloss': vloss}
-    
-        if len(saved_checkpoints) < args.save_top_k:
-            ema.store()
-            ema.copy_to() # save ema of the parameters
-            path = save_checkpoint(args, model, optim, epoch, vloss)
-            ema.restore()
-            draw_text('High Score')
-            saved_checkpoints.append({
-                'path': path,
-                'epoch': epoch,
-                'vloss': vloss
-            })
-        elif vloss < max(saved_checkpoints, key=lambda x: x['vloss'])['vloss']:
-            ema.store()
-            ema.copy_to()
-            path = save_checkpoint(args, model, optim, epoch, vloss)
-            ema.restore()
-            draw_text('High Score')
-            saved_checkpoints.append({
-                'path': path,
-                'epoch': epoch,
-                'vloss': vloss
-            })
-            saved_checkpoints.sort(key=lambda x: x['vloss'])
-            to_remove = saved_checkpoints.pop()
-            os.remove(to_remove['path']) 
+            print(f'\n\n\n--- Epoch {epoch}, Validation Loss: {vloss} ---\n\n\n')
+            results[epoch] = {'loss': loss, 'vloss': vloss}
+        
+            if len(saved_checkpoints) < args.save_top_k:
+                ema.store()
+                ema.copy_to() # save ema of the parameters
+                path = save_checkpoint(args, model, optim, epoch, vloss)
+                ema.restore()
+                draw_text('High Score')
+                saved_checkpoints.append({
+                    'path': path,
+                    'epoch': epoch,
+                    'vloss': vloss
+                })
+            elif vloss < max(saved_checkpoints, key=lambda x: x['vloss'])['vloss']:
+                ema.store()
+                ema.copy_to()
+                path = save_checkpoint(args, model, optim, epoch, vloss)
+                ema.restore()
+                draw_text('High Score')
+                saved_checkpoints.append({
+                    'path': path,
+                    'epoch': epoch,
+                    'vloss': vloss
+                })
+                saved_checkpoints.sort(key=lambda x: x['vloss'])
+                to_remove = saved_checkpoints.pop()
+                os.remove(to_remove['path']) 
+        except RuntimeError as e:
+            if str(e).startswith('CUDA out of memory'):
+                print('CUDA out of memory, trying to recover')
+                torch.cuda.empty_cache()
+                continue
             
             
 
