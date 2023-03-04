@@ -22,3 +22,6 @@ model:
       checkpoint_every_n: 1
       shared_kv: true
       talking_heads: false
+    add_ons:
+      sep_token:
+        dim: 256

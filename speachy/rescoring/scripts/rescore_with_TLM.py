@@ -68,7 +68,7 @@ def get_text_probability(args, model, tokenizer, text, cached_states=None, next_
     #targets = lm_utils.add_eos(targets, eos_id=0, token_lens=token_lens) don't use eos ):
     #targets = lm_utils.mark_padding(targets, lm_utils.token_lens_to_mask(token_lens), pad_id=-100) # probably uncecery since batch of 1 so nooo padding
     
-    logits, _, cached_states = model(x=tokens, length=token_lens, cache=cached_states)
+    logits, _, cached_states = model(x=tokens, length=token_lens, cache=cached_states, sep=exists(cached_states))
  
 
     # remove first and last token 
@@ -350,7 +350,7 @@ def main(args, hypothesis):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--hyppkl", type=str, default='./dev_rescored.pkl')
+    parser.add_argument("-hyp", "--hyp",  type=str, default='./dev_rescored.pkl')
     parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml')
     parser.add_argument('--device', type=str, default='auto')
     #parser.add_argument('--tlm_threshold', help='if TLM logp is lower than this threshold TLM won\'t be interpolated', type=float, default=-20)

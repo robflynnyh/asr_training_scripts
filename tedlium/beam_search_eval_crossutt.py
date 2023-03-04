@@ -191,7 +191,7 @@ def main(args):
 
     write_to_log('beam_search_log.txt', f'alpha_range: {alpha_range}, beta_range: {beta_penalty} Initialising beam search...')
     
-    ray.init(num_cpus=40, num_gpus=0)
+    ray.init(num_cpus=25, num_gpus=0)
     cutoff = -6
     beamsearch_fn = partial(
         BeamSearch, 
@@ -205,7 +205,7 @@ def main(args):
         beam_width=25,
         blank_id=128,
         top_am_threshold=cutoff,
-        max_cache_length = 1000,
+        max_cache_length = -1,
         debug=False
     )
     beamsearch_fn = ray.put(beamsearch_fn) # put beamsearch_fn on the ray object store so that it can be accessed by the remote function
@@ -213,7 +213,8 @@ def main(args):
     # runs same random seed
     random.seed(36)
     dev_hyps_sample = dev_hyps 
-    # select only 1 of the meetings (key)
+    # select only 3 of the meetings (key)
+    #dev_hyps_sample = {k:dev_hyps_sample[k] for k in random.sample(list(dev_hyps_sample.keys()), 3)}
     #k = random.choice(list(dev_hyps_sample.keys()))
     #dev_hyps_sample = {k:dev_hyps_sample[k]}
     while True:

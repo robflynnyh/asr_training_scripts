@@ -216,10 +216,10 @@ class BeamSearch():
             self.beams[0].am_sequence.append(self.blank_id) # prevent collapse across utterances
         self.language_model.apply_sep_token(beams=self.beams)
 
-
             
     @staticmethod
-    def trim_cache(state, new_length):
+    def trim_cache(state, new_length): 
+      
         bos = state['cache'][:, :, :, :, 0, :].unsqueeze(-2).clone()
         amount_to_trim = state['cache_lengths'][-1] - new_length
         state['cache'] = state['cache'][:, :, :, :, amount_to_trim:, :]
@@ -235,6 +235,7 @@ class BeamSearch():
             'cache_lengths': state['cache_lengths'][indice, None],
             'next_sentence_pred': state['next_sentence_pred'][indice],
         }
+        cache['cache'] = cache['cache'][:, :, :, :, :cache_len, :]
         if self.max_cache_length == -1 or cache_len <= self.max_cache_length:
             return cache
         else:

@@ -308,16 +308,16 @@ class transformer(nn.Module):
     def get_cache_indices(x_lens, cache_lens, cache_kv, x):  
         # used later w/ gather to remove padding when cache is concatenated with current input to remove padding
         max_new_len = (x_lens + cache_lens).max()
-
-        B, H, N, D = x.shape[0], 1, (x.shape[1] + cache_kv.shape[-2]), cache_kv.shape[-1]
+        # cache kv =  LAYERS, KEYS+VALUES (2), BATCH, HEADS, N, DIM
+        B, H, N, D = x.shape[0], cache_kv.shape[-3], (x.shape[1] + cache_kv.shape[-2]), cache_kv.shape[-1]
         indices = []
         for i in range(B): # stinky for loop to sort out indices for gather 
             cache_indices = torch.arange(cache_lens[i], device='cpu')
-            total_length = cache_lens[i] + x_lens[i]
+            total_length = cache_lens[i] + x_lens[i] 
             diff_from_max_len = max_new_len - total_length
             x_indices = torch.arange(x_lens[i]+diff_from_max_len, device='cpu') + cache_kv.shape[-2]
             if diff_from_max_len > 0:
-                x_indices[-diff_from_max_len:] = N # last index will be used for padding
+                x_indices[-diff_from_max_len:] = N  # last index will be used for padding
             new_indices = torch.cat([cache_indices, x_indices])
             indices.append(new_indices)
 
@@ -329,7 +329,6 @@ class transformer(nn.Module):
     def create_masks_and_positions(self, x, length, cache): 
         x_len = length if length is not None else torch.tensor(x.shape[-2]).expand(x.shape[0])
         cache_len = cache['cache_lengths'] if exists(cache) else 0
-     
         total_len = x_len + cache_len
         kv_mask = torch.arange(total_len.max(), device=x.device).expand(len(total_len), -1) >= total_len.unsqueeze(-1)
         q_mask = torch.arange(x_len.max(), device=x.device).expand(len(x_len), -1) >= x_len.unsqueeze(-1)
@@ -341,10 +340,10 @@ class transformer(nn.Module):
         diagonal_offset = torch.arange(x_len.max(), device=x.device)[None,:,None]
         ##
         ## positional stuff ##
-        positional_grid = (causal_mask - cache_offset - diagonal_offset)*-1
+        positional_grid = (causal_mask - cache_offset - diagonal_offset) * -1
         pos = torch.arange(positional_grid.min(), positional_grid.max()+1, device=x.device, dtype=x.dtype)[:,None]
         min_cache_len = 0 if cache_len.__class__ == int else cache_len.min()
-        positional_indices = (positional_grid + (total_len.max() - min_cache_len - 1)) # shift so zero is the smallest number
+        positional_indices = ((positional_grid) + (total_len.max() - min_cache_len - 1)) # shift so zero is the smallest number
         pos_bias = self.positional_bias(pos=pos, indices=positional_indices, dtype=x.dtype, device=x.device)
         ## positional stuff ##
         ##
@@ -353,6 +352,7 @@ class transformer(nn.Module):
             attn_mask = torch.logical_or(attn_mask, causal_mask[:,None])
         ##
         return q_mask, attn_mask, total_len, x_len, cache_len, pos_bias
+
 
     def forward(self, x, length=None, self_condtioning=None, cache=None, **kwargs):
         intermediate_logits = []

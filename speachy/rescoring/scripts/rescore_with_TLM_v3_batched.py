@@ -401,7 +401,7 @@ def run_random_search(args, model, tokenizer, hypothesis):
     args.tlm_std = standardisation_stats['tlm_std']
     
     bpe_lm_weights_range = [-0.6, 0.6]
-    tlm_scales = [0.0, 60.0]
+    tlm_scales = [30.0, 90.0]
     ngram_scales = [0.0, 1.25]
     length_penalties = [0.0, 0.0] #not used anymore
     bpe_length_penalty_weights = [0.2, 4.75]
@@ -460,6 +460,8 @@ def main(args, hypothesis):
         print(f'Loaded model {args.checkpoint} with epoch {epoch} and val_loss {val_loss}\n Model type: {modeltype}')
         model.to(device)
         model.eval()
+        if args.half_precision:
+            model.half()
     else:
         model, tokenizer = None, None
     
@@ -507,9 +509,10 @@ def main(args, hypothesis):
 # 200, 110 ?
 
 
-#1kw pretrained: Lowest WER: 0.09550530585032502 with params: bpe_lm_weight: 0.36628218945224245, tlm_scale: 34.718944475402765, ngram_scale: 0.5514452793042264, length_penalty: 1.5627193862644981, bpe_length_penalty_weight: 0.643815814552575
+#
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--half_precision', action='store_true')
     parser.add_argument("-hyp", "--hyp", type=str, default='./dev_rescored.pkl')
     parser.add_argument('--config', type=str, default='./experiment_configs/lm/decoder_pg19.yaml')
     parser.add_argument('--device', type=str, default='auto')
@@ -526,14 +529,16 @@ if __name__ == '__main__':
     parser.add_argument('-not_use_top_sample','--not_use_top_sample', action='store_true', help='whether to always use top hypothesis as history')
 
     parser.add_argument('-random_search', '--run_random_search', action='store_true', help='whether to run random search')
+    #Best params: {'tlm_mean': tensor(-169.9406), 'tlm_std': tensor(103.6984), 'bpe_lm_weight': tensor(-0.3164), 'tlm_scale': tensor(55.7264), 'ngram_scale': tensor(0.8550), 'bpe_length_penalty_weight': tensor(3.0772)}
+
     # hyperparameters for rescore
-    parser.add_argument('-bpe_lm_weight','--bpe_lm_weight', type=float, default=0.0841)
-    parser.add_argument('-bpe_len_pen', '--bpe_length_penalty_weight', type=float, default=2.2083)
-    parser.add_argument('-ngram_scale', '--ngram_scale', type=float, default=0.5565) # linearly scale AM logp by this factor')
-    parser.add_argument('-length_penalty','--length_penalty', type=float, default=-0.3103) 
-    parser.add_argument('-tlm_scale','--tlm_scale', type=float, default=42.5728) # linearly scale TLM logp by this factor
-    parser.add_argument('-tlm_mean','--tlm_mean', type=float, default=-168.37120056152344,) # mean of TLM logp
-    parser.add_argument('-tlm_std','--tlm_std', type=float, default=105.40515899658203) # std of TLM logp
+    parser.add_argument('-bpe_lm_weight','--bpe_lm_weight', type=float, default=-0.3164)
+    parser.add_argument('-bpe_len_pen', '--bpe_length_penalty_weight', type=float, default=3.0772)
+    parser.add_argument('-ngram_scale', '--ngram_scale', type=float, default=0.8550) # linearly scale AM logp by this factor')
+    parser.add_argument('-length_penalty','--length_penalty', type=float, default=0.0) 
+    parser.add_argument('-tlm_scale','--tlm_scale', type=float, default=55.7264) # linearly scale TLM logp by this factor
+    parser.add_argument('-tlm_mean','--tlm_mean', type=float, default=-169.9406,) # mean of TLM logp
+    parser.add_argument('-tlm_std','--tlm_std', type=float, default=103.6984) # std of TLM logp
     # hyperparameters for rescore
 
     parser.add_argument('-random_search_time', '--random_search_time', type=float, default=1000) # time limit for random search
