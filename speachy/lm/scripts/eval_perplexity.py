@@ -116,6 +116,7 @@ def main(args):
             print('resetting cache', recording_id != prev_recording_id, start_t - prev_end, '\n\n\n\n')
 
         cache = trim_cache(cache, args.max_cache)
+        last_logit = None if not exists(cache) else last_logit
 
         if len(text) == 0:
             prev_end = end_t

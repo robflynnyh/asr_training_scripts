@@ -153,14 +153,14 @@ def main(args):
         force_cpu = True
     )
 
-    temp_name_dev = f'dev_{args.load_tmp}'
+    temp_name_dev = f'{args.split}_{args.load_tmp}'
     dev_stage, test_stage = None, None # stage corresponds to the last step of the pipeline that was completed
     print(f'Fetching logits for dev set...')
     if os.path.exists(os.path.join(args.tmp_dir, temp_name_dev)):
         dev_stage, dev_hyps = load_pickle(os.path.join(args.tmp_dir, temp_name_dev))
 
     if dev_stage == None:
-        dev_hyps = get_logits(args, model, corpus_dict['dev'])
+        dev_hyps = get_logits(args, model, corpus_dict[args.split])
         save_pickle(os.path.join(args.tmp_dir, temp_name_dev), dev_hyps, stage='logits')
         dev_stage = 'logits'
     del model
@@ -191,7 +191,7 @@ def main(args):
         blank_penalty=0.0,
         repitition_penalty=0.0,
         top_am_threshold=-5,
-        max_cache_length = 500,
+        max_cache_length = args.cache_length,
         debug=False
     )
     beamsearch_fn = ray.put(beamsearch_fn) # put beamsearch_fn on the ray object store so that it can be accessed by the remote function
@@ -233,7 +233,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser() 
 
 
-
+    parser.add_argument('-cache_length', '--cache_length', default=250, type=int, help='max length of cache')
 
     parser.add_argument('-load_tmp', '--load_tmp', default='ami.pkl', type=str, help='base name of logit hyp to load (full name = split+_+name')
     parser.add_argument('-tmp_dir','--tmp_dir', type=str, default='./tmp', help='path to tmp dir')

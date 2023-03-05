@@ -169,14 +169,14 @@ def main(args):
         force_cpu = True
     )
 
-    temp_name_dev = f'dev_{args.load_tmp}'
+    temp_name_dev = f'{args.split}_{args.load_tmp}'
     dev_stage, test_stage = None, None # stage corresponds to the last step of the pipeline that was completed
     print(f'Fetching logits for dev set...')
     if os.path.exists(os.path.join(args.tmp_dir, temp_name_dev)):
         dev_stage, dev_hyps = load_pickle(os.path.join(args.tmp_dir, temp_name_dev))
 
     if dev_stage == None:
-        dev_hyps = get_logits(args, model, corpus_dict['dev'])
+        dev_hyps = get_logits(args, model, corpus_dict[args.split])
         save_pickle(os.path.join(args.tmp_dir, temp_name_dev), dev_hyps, stage='logits')
         dev_stage = 'logits'
     del model
@@ -205,7 +205,7 @@ def main(args):
         beam_width=25,
         blank_id=128,
         top_am_threshold=cutoff,
-        max_cache_length = -1,
+        max_cache_length = args.cache_length,
         debug=False
     )
     beamsearch_fn = ray.put(beamsearch_fn) # put beamsearch_fn on the ray object store so that it can be accessed by the remote function
@@ -261,9 +261,10 @@ if __name__ == '__main__':
     '''
     parser = argparse.ArgumentParser() 
 
+    parser.add_argument('-cache_len', '--cache_length', type=int, default=100, help='length of cache to use')
     parser.add_argument('--teacher_forcing', action='store_true', help='whether to use teacher forcing')
 
-    parser.add_argument('-load_tmp', '--load_tmp', default='ted_test.pkl', type=str, help='base name of logit hyp to load (full name = split+_+name')
+    parser.add_argument('-load_tmp', '--load_tmp', default='ted.pkl', type=str, help='base name of logit hyp to load (full name = split+_+name')
     parser.add_argument('-tmp_dir','--tmp_dir', type=str, default='./tmp', help='path to tmp dir')
 
     parser.add_argument('-log_beta', '--log_beta', action='store_true', help='whether to use log scale for beta length penalty')

@@ -81,7 +81,7 @@ def get_text_probability(args, model, tokenizer, text, cached_states=None, durat
 
     # temperature
     logits = logits / args.temperature
-    torch.set_printoptions(profile="full")
+    #torch.set_printoptions(profile="full")
 
     logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
 

@@ -100,8 +100,7 @@ model:
     feat_in: null
     num_classes: -1
     vocabulary: []
-    gating: false
-    reproject_type: 'conv'
+    reproject_type: 'none'
 
 
   optim:

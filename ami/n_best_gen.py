@@ -257,6 +257,8 @@ def main(args):
         dev_hyps = get_logits(args, model, corpus_dict['dev'])
         save_pickle(os.path.join(args.tmp_dir, temp_name_dev), dev_hyps, stage='logits')
         dev_stage = 'logits'
+        del model
+        torch.cuda.empty_cache()
     
 
     print(f'performing grid search for pass decoding...')
@@ -388,3 +390,6 @@ if __name__ == '__main__':
         print(f'Loading config from checkpoint dir: {args.model_config}')
 
     main(args)
+
+# interctc Best alpha: 1.1, beta: 0.5, wer: 0.22853188500010485
+# --

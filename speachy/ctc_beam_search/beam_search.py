@@ -195,11 +195,11 @@ class BeamSearch():
         self.position = 0 # reset position
         self.beams = [self.beams[0]] # only keep best beam
         
-        '''logps, state = self.language_model.get_initial_state()
+        '''logps, state = self.language_model.get_initial_state() (debug)
         self.beams[0].state = state
         self.beams[0].next_lm_token_lps = logps'''
 
-        if exists(teacher_forcing): # think something is wrong here
+        if exists(teacher_forcing): # use gold tokens for the history
             if not exists(prev_cache):
                 _, prev_cache = self.language_model.get_initial_state()
             tokens = self.tokenizer.text_to_ids(teacher_forcing)
@@ -216,12 +216,19 @@ class BeamSearch():
             self.beams[0].am_sequence.append(self.blank_id) # prevent collapse across utterances
         self.language_model.apply_sep_token(beams=self.beams)
 
+        cache_len = self.beams[0].state['cache_lengths'][0]
+        if self.max_cache_length == -1 or cache_len <= self.max_cache_length:
+            pass
+        else:
+            self.beams[0].state = self.trim_cache(self.beams[0].state, self.max_cache_length)
+
             
     @staticmethod
     def trim_cache(state, new_length): 
-      
-        bos = state['cache'][:, :, :, :, 0, :].unsqueeze(-2).clone()
         amount_to_trim = state['cache_lengths'][-1] - new_length
+        if amount_to_trim <= 0:
+            return state
+        bos = state['cache'][:, :, :, :, 0, :].unsqueeze(-2).clone()
         state['cache'] = state['cache'][:, :, :, :, amount_to_trim:, :]
         state['cache'] = torch.cat([bos, state['cache']], dim=-2)
         state['cache_lengths'] = state['cache_lengths'] - amount_to_trim + 1 # add bos
@@ -236,10 +243,7 @@ class BeamSearch():
             'next_sentence_pred': state['next_sentence_pred'][indice],
         }
         cache['cache'] = cache['cache'][:, :, :, :, :cache_len, :]
-        if self.max_cache_length == -1 or cache_len <= self.max_cache_length:
-            return cache
-        else:
-            return self.trim_cache(cache, self.max_cache_length)
+        return cache
 
     def run_search(self, use_tqdm=True):
         search = True

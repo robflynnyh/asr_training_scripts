@@ -1,0 +1,1207 @@
+./checkpoints/open_sub_ft_ami/checkpoint_809_id_37.pt
+odict_keys(['sep_token', 'layers.temperature', 'layers.positional_bias.mlp.0.0.weight', 'layers.positional_bias.mlp.0.0.bias', 'layers.positional_bias.mlp.1.0.weight', 'layers.positional_bias.mlp.1.0.bias', 'layers.positional_bias.mlp.2.weight', 'layers.positional_bias.mlp.2.bias', 'layers.layers.0.0.norm.weight', 'layers.layers.0.0.norm.bias', 'layers.layers.0.0.fn.temperature', 'layers.layers.0.0.fn.q_proj.weight', 'layers.layers.0.0.fn.kv_proj.weight', 'layers.layers.0.0.fn.out_proj.weight', 'layers.layers.0.1.norm.weight', 'layers.layers.0.1.norm.bias', 'layers.layers.0.1.fn.0.proj.weight', 'layers.layers.0.1.fn.0.proj.bias', 'layers.layers.0.1.fn.2.weight', 'layers.layers.0.1.fn.2.bias', 'layers.layers.1.0.norm.weight', 'layers.layers.1.0.norm.bias', 'layers.layers.1.0.fn.temperature', 'layers.layers.1.0.fn.q_proj.weight', 'layers.layers.1.0.fn.kv_proj.weight', 'layers.layers.1.0.fn.out_proj.weight', 'layers.layers.1.1.norm.weight', 'layers.layers.1.1.norm.bias', 'layers.layers.1.1.fn.0.proj.weight', 'layers.layers.1.1.fn.0.proj.bias', 'layers.layers.1.1.fn.2.weight', 'layers.layers.1.1.fn.2.bias', 'layers.layers.2.0.norm.weight', 'layers.layers.2.0.norm.bias', 'layers.layers.2.0.fn.temperature', 'layers.layers.2.0.fn.q_proj.weight', 'layers.layers.2.0.fn.kv_proj.weight', 'layers.layers.2.0.fn.out_proj.weight', 'layers.layers.2.1.norm.weight', 'layers.layers.2.1.norm.bias', 'layers.layers.2.1.fn.0.proj.weight', 'layers.layers.2.1.fn.0.proj.bias', 'layers.layers.2.1.fn.2.weight', 'layers.layers.2.1.fn.2.bias', 'layers.layers.3.0.norm.weight', 'layers.layers.3.0.norm.bias', 'layers.layers.3.0.fn.temperature', 'layers.layers.3.0.fn.q_proj.weight', 'layers.layers.3.0.fn.kv_proj.weight', 'layers.layers.3.0.fn.out_proj.weight', 'layers.layers.3.1.norm.weight', 'layers.layers.3.1.norm.bias', 'layers.layers.3.1.fn.0.proj.weight', 'layers.layers.3.1.fn.0.proj.bias', 'layers.layers.3.1.fn.2.weight', 'layers.layers.3.1.fn.2.bias', 'layers.layers.4.0.norm.weight', 'layers.layers.4.0.norm.bias', 'layers.layers.4.0.fn.temperature', 'layers.layers.4.0.fn.q_proj.weight', 'layers.layers.4.0.fn.kv_proj.weight', 'layers.layers.4.0.fn.out_proj.weight', 'layers.layers.4.1.norm.weight', 'layers.layers.4.1.norm.bias', 'layers.layers.4.1.fn.0.proj.weight', 'layers.layers.4.1.fn.0.proj.bias', 'layers.layers.4.1.fn.2.weight', 'layers.layers.4.1.fn.2.bias', 'layers.layers.5.0.norm.weight', 'layers.layers.5.0.norm.bias', 'layers.layers.5.0.fn.temperature', 'layers.layers.5.0.fn.q_proj.weight', 'layers.layers.5.0.fn.kv_proj.weight', 'layers.layers.5.0.fn.out_proj.weight', 'layers.layers.5.1.norm.weight', 'layers.layers.5.1.norm.bias', 'layers.layers.5.1.fn.0.proj.weight', 'layers.layers.5.1.fn.0.proj.bias', 'layers.layers.5.1.fn.2.weight', 'layers.layers.5.1.fn.2.bias', 'layers.layers.6.0.norm.weight', 'layers.layers.6.0.norm.bias', 'layers.layers.6.0.fn.temperature', 'layers.layers.6.0.fn.q_proj.weight', 'layers.layers.6.0.fn.kv_proj.weight', 'layers.layers.6.0.fn.out_proj.weight', 'layers.layers.6.1.norm.weight', 'layers.layers.6.1.norm.bias', 'layers.layers.6.1.fn.0.proj.weight', 'layers.layers.6.1.fn.0.proj.bias', 'layers.layers.6.1.fn.2.weight', 'layers.layers.6.1.fn.2.bias', 'layers.layers.7.0.norm.weight', 'layers.layers.7.0.norm.bias', 'layers.layers.7.0.fn.temperature', 'layers.layers.7.0.fn.q_proj.weight', 'layers.layers.7.0.fn.kv_proj.weight', 'layers.layers.7.0.fn.out_proj.weight', 'layers.layers.7.1.norm.weight', 'layers.layers.7.1.norm.bias', 'layers.layers.7.1.fn.0.proj.weight', 'layers.layers.7.1.fn.0.proj.bias', 'layers.layers.7.1.fn.2.weight', 'layers.layers.7.1.fn.2.bias', 'layers.layers.8.0.norm.weight', 'layers.layers.8.0.norm.bias', 'layers.layers.8.0.fn.temperature', 'layers.layers.8.0.fn.q_proj.weight', 'layers.layers.8.0.fn.kv_proj.weight', 'layers.layers.8.0.fn.out_proj.weight', 'layers.layers.8.1.norm.weight', 'layers.layers.8.1.norm.bias', 'layers.layers.8.1.fn.0.proj.weight', 'layers.layers.8.1.fn.0.proj.bias', 'layers.layers.8.1.fn.2.weight', 'layers.layers.8.1.fn.2.bias', 'layers.layers.9.0.norm.weight', 'layers.layers.9.0.norm.bias', 'layers.layers.9.0.fn.temperature', 'layers.layers.9.0.fn.q_proj.weight', 'layers.layers.9.0.fn.kv_proj.weight', 'layers.layers.9.0.fn.out_proj.weight', 'layers.layers.9.1.norm.weight', 'layers.layers.9.1.norm.bias', 'layers.layers.9.1.fn.0.proj.weight', 'layers.layers.9.1.fn.0.proj.bias', 'layers.layers.9.1.fn.2.weight', 'layers.layers.9.1.fn.2.bias', 'layers.layers.10.0.norm.weight', 'layers.layers.10.0.norm.bias', 'layers.layers.10.0.fn.temperature', 'layers.layers.10.0.fn.q_proj.weight', 'layers.layers.10.0.fn.kv_proj.weight', 'layers.layers.10.0.fn.out_proj.weight', 'layers.layers.10.1.norm.weight', 'layers.layers.10.1.norm.bias', 'layers.layers.10.1.fn.0.proj.weight', 'layers.layers.10.1.fn.0.proj.bias', 'layers.layers.10.1.fn.2.weight', 'layers.layers.10.1.fn.2.bias', 'layers.layers.11.0.norm.weight', 'layers.layers.11.0.norm.bias', 'layers.layers.11.0.fn.temperature', 'layers.layers.11.0.fn.q_proj.weight', 'layers.layers.11.0.fn.kv_proj.weight', 'layers.layers.11.0.fn.out_proj.weight', 'layers.layers.11.1.norm.weight', 'layers.layers.11.1.norm.bias', 'layers.layers.11.1.fn.0.proj.weight', 'layers.layers.11.1.fn.0.proj.bias', 'layers.layers.11.1.fn.2.weight', 'layers.layers.11.1.fn.2.bias', 'embedding.weight', 'to_logits.weight', 'to_logits.bias', 'post_norm.weight', 'post_norm.bias', 'next_sentence_pred.gamma', 'next_sentence_pred.beta'])
+Loaded checkpoint from ./checkpoints/open_sub_ft_ami/checkpoint_809_id_37.pt
+Epoch: 809, Validation loss: 1.7615843936449305
+Model Loaded
+Model type: qknorm_shared. Epoch: 809. Val loss: 1.7615843936449305
+resetting cache True 56.762 
+
+
+
+
+resetting cache False 10.470999999999997 
+
+
+
+
+resetting cache False 10.836999999999989 
+
+
+
+
+resetting cache False 10.541999999999916 
+
+
+
+
+resetting cache False 13.153999999999996 
+
+
+
+
+resetting cache False 10.605999999999995 
+
+
+
+
+resetting cache False 17.29600000000005 
+
+
+
+
+resetting cache False 16.721000000000004 
+
+
+
+
+resetting cache True -2153.4649999999997 
+
+
+
+
+resetting cache False 12.154 
+
+
+
+
+resetting cache False 17.951999999999998 
+
+
+
+
+resetting cache False 12.653999999999996 
+
+
+
+
+resetting cache False 21.179000000000002 
+
+
+
+
+resetting cache False 14.262 
+
+
+
+
+resetting cache False 11.83099999999996 
+
+
+
+
+resetting cache False 16.82299999999998 
+
+
+
+
+resetting cache False 13.996000000000095 
+
+
+
+
+resetting cache False 10.687999999999988 
+
+
+
+
+resetting cache False 17.375999999999976 
+
+
+
+
+resetting cache False 15.535999999999945 
+
+
+
+
+resetting cache False 12.288000000000011 
+
+
+
+
+resetting cache False 16.81600000000003 
+
+
+
+
+resetting cache False 11.855999999999995 
+
+
+
+
+resetting cache False 10.20799999999997 
+
+
+
+
+resetting cache False 38.89599999999996 
+
+
+
+
+resetting cache False 11.88799999999992 
+
+
+
+
+resetting cache False 18.720000000000027 
+
+
+
+
+resetting cache False 38.802999999999884 
+
+
+
+
+resetting cache False 10.012000000000171 
+
+
+
+
+resetting cache False 10.020999999999958 
+
+
+
+
+resetting cache False 11.773000000000138 
+
+
+
+
+resetting cache True -1454.689 
+
+
+
+
+resetting cache False 12.542000000000002 
+
+
+
+
+resetting cache False 15.120000000000005 
+
+
+
+
+resetting cache False 17.75200000000001 
+
+
+
+
+resetting cache False 10.175999999999988 
+
+
+
+
+resetting cache False 23.601999999999975 
+
+
+
+
+resetting cache False 15.192000000000007 
+
+
+
+
+resetting cache False 12.273000000000138 
+
+
+
+
+resetting cache False 10.437999999999874 
+
+
+
+
+resetting cache False 10.962999999999965 
+
+
+
+
+resetting cache False 17.28099999999995 
+
+
+
+
+resetting cache True -2208.224 
+
+
+
+
+resetting cache False 11.153 
+
+
+
+
+resetting cache False 10.211000000000006 
+
+
+
+
+resetting cache False 37.934000000000026 
+
+
+
+
+resetting cache False 15.069999999999993 
+
+
+
+
+resetting cache False 22.29600000000005 
+
+
+
+
+resetting cache False 21.976 
+
+
+
+
+resetting cache False 17.756000000000085 
+
+
+
+
+resetting cache False 17.201999999999998 
+
+
+
+
+resetting cache False 11.967999999999847 
+
+
+
+
+resetting cache False 13.176999999999907 
+
+
+
+
+resetting cache False 19.923999999999978 
+
+
+
+
+resetting cache False 11.405999999999949 
+
+
+
+
+resetting cache False 18.105000000000018 
+
+
+
+
+resetting cache False 11.087999999999965 
+
+
+
+
+resetting cache False 10.044000000000096 
+
+
+
+
+resetting cache False 14.38299999999981 
+
+
+
+
+resetting cache True -2305.174 
+
+
+
+
+resetting cache False 24.799999999999983 
+
+
+
+
+resetting cache False 10.164000000000016 
+
+
+
+
+resetting cache False 12.90700000000001 
+
+
+
+
+resetting cache False 15.914999999999992 
+
+
+
+
+resetting cache False 14.179000000000002 
+
+
+
+
+resetting cache False 17.30000000000001 
+
+
+
+
+resetting cache False 10.71999999999997 
+
+
+
+
+resetting cache False 30.777999999999963 
+
+
+
+
+resetting cache False 10.912000000000035 
+
+
+
+
+resetting cache False 19.512 
+
+
+
+
+resetting cache False 13.793000000000006 
+
+
+
+
+resetting cache False 12.521000000000015 
+
+
+
+
+resetting cache False 20.202999999999975 
+
+
+
+
+resetting cache False 18.272000000000048 
+
+
+
+
+resetting cache False 30.432000000000016 
+
+
+
+
+resetting cache False 18.680999999999813 
+
+
+
+
+resetting cache False 16.24000000000001 
+
+
+
+
+resetting cache False 10.048000000000002 
+
+
+
+
+resetting cache False 13.503999999999905 
+
+
+
+
+resetting cache False 19.951000000000022 
+
+
+
+
+resetting cache False 27.797000000000025 
+
+
+
+
+resetting cache False 17.210000000000036 
+
+
+
+
+resetting cache False 12.384000000000015 
+
+
+
+
+resetting cache False 13.814000000000078 
+
+
+
+
+resetting cache False 11.88799999999992 
+
+
+
+
+resetting cache False 10.729000000000042 
+
+
+
+
+resetting cache False 11.632000000000062 
+
+
+
+
+resetting cache True -2027.242 
+
+
+
+
+resetting cache False 11.332000000000008 
+
+
+
+
+resetting cache False 18.464 
+
+
+
+
+resetting cache False 31.183999999999997 
+
+
+
+
+resetting cache False 10.032000000000039 
+
+
+
+
+resetting cache False 16.27000000000004 
+
+
+
+
+resetting cache False 12.118000000000052 
+
+
+
+
+resetting cache False 14.879999999999995 
+
+
+
+
+resetting cache False 13.312999999999988 
+
+
+
+
+resetting cache True -993.744 
+
+
+
+
+resetting cache False 20.876000000000005 
+
+
+
+
+resetting cache False 11.235000000000014 
+
+
+
+
+resetting cache False 10.655999999999949 
+
+
+
+
+resetting cache False 20.326000000000022 
+
+
+
+
+resetting cache True -768.127 
+
+
+
+
+resetting cache False 13.951999999999998 
+
+
+
+
+resetting cache False 14.956999999999994 
+
+
+
+
+resetting cache False 10.427999999999997 
+
+
+
+
+resetting cache False 12.971000000000004 
+
+
+
+
+resetting cache False 10.48599999999999 
+
+
+
+
+resetting cache False 17.34299999999996 
+
+
+
+
+resetting cache False 11.220000000000027 
+
+
+
+
+resetting cache False 12.223999999999933 
+
+
+
+
+resetting cache False 12.009000000000015 
+
+
+
+
+resetting cache False 42.370000000000005 
+
+
+
+
+resetting cache False 17.631999999999948 
+
+
+
+
+resetting cache False 19.278999999999996 
+
+
+
+
+resetting cache False 13.065000000000055 
+
+
+
+
+resetting cache False 12.162000000000035 
+
+
+
+
+resetting cache False 21.25299999999993 
+
+
+
+
+resetting cache False 84.76800000000003 
+
+
+
+
+resetting cache True -1767.863 
+
+
+
+
+resetting cache False 14.482999999999997 
+
+
+
+
+resetting cache False 10.346000000000004 
+
+
+
+
+resetting cache False 11.927999999999997 
+
+
+
+
+resetting cache False 12.56100000000015 
+
+
+
+
+resetting cache False 12.780999999999949 
+
+
+
+
+resetting cache False 11.805999999999813 
+
+
+
+
+resetting cache False 19.677999999999884 
+
+
+
+
+resetting cache False 15.63799999999992 
+
+
+
+
+resetting cache False 11.35200000000009 
+
+
+
+
+resetting cache False 13.826999999999998 
+
+
+
+
+resetting cache False 12.275000000000091 
+
+
+
+
+resetting cache False 14.819999999999709 
+
+
+
+
+resetting cache False 11.309999999999945 
+
+
+
+
+resetting cache True -2280.624 
+
+
+
+
+resetting cache False 29.492000000000004 
+
+
+
+
+resetting cache False 12.577999999999975 
+
+
+
+
+resetting cache False 11.276999999999987 
+
+
+
+
+resetting cache False 10.830000000000155 
+
+
+
+
+resetting cache False 12.106999999999971 
+
+
+
+
+resetting cache False 10.57400000000007 
+
+
+
+
+resetting cache True -2142.704 
+
+
+
+
+resetting cache False 14.573 
+
+
+
+
+resetting cache False 16.517999999999997 
+
+
+
+
+resetting cache False 23.546 
+
+
+
+
+resetting cache False 16.074000000000012 
+
+
+
+
+resetting cache False 19.400999999999982 
+
+
+
+
+resetting cache False 23.69999999999999 
+
+
+
+
+resetting cache False 12.091000000000008 
+
+
+
+
+resetting cache False 11.21300000000008 
+
+
+
+
+resetting cache False 10.586999999999989 
+
+
+
+
+resetting cache False 13.725000000000023 
+
+
+
+
+resetting cache False 10.608000000000061 
+
+
+
+
+resetting cache False 16.159999999999968 
+
+
+
+
+resetting cache False 10.649999999999864 
+
+
+
+
+resetting cache False 16.0 
+
+
+
+
+resetting cache False 10.407000000000153 
+
+
+
+
+resetting cache False 17.332000000000107 
+
+
+
+
+resetting cache False 10.383000000000038 
+
+
+
+
+resetting cache False 14.847999999999956 
+
+
+
+
+resetting cache False 10.077999999999975 
+
+
+
+
+resetting cache False 11.967999999999847 
+
+
+
+
+resetting cache False 13.944999999999936 
+
+
+
+
+resetting cache False 20.695000000000164 
+
+
+
+
+resetting cache True -2328.39 
+
+
+
+
+resetting cache False 25.21599999999998 
+
+
+
+
+resetting cache False 10.902999999999992 
+
+
+
+
+resetting cache False 22.568000000000012 
+
+
+
+
+resetting cache False 14.694999999999993 
+
+
+
+
+resetting cache False 26.932999999999993 
+
+
+
+
+resetting cache False 16.575999999999965 
+
+
+
+
+resetting cache False 32.672000000000025 
+
+
+
+
+resetting cache False 19.43599999999998 
+
+
+
+
+resetting cache False 12.260999999999967 
+
+
+
+
+resetting cache False 21.36500000000001 
+
+
+
+
+resetting cache False 58.409000000000106 
+
+
+
+
+resetting cache False 10.875999999999976 
+
+
+
+
+resetting cache False 13.632000000000062 
+
+
+
+
+resetting cache False 12.680000000000064 
+
+
+
+
+resetting cache False 37.48500000000013 
+
+
+
+
+resetting cache False 11.3599999999999 
+
+
+
+
+resetting cache False 14.836999999999989 
+
+
+
+
+resetting cache True -2201.696 
+
+
+
+
+resetting cache False 14.818000000000001 
+
+
+
+
+resetting cache False 15.248000000000005 
+
+
+
+
+resetting cache False 25.857 
+
+
+
+
+resetting cache False 11.120000000000005 
+
+
+
+
+resetting cache False 10.541000000000025 
+
+
+
+
+resetting cache False 20.305999999999983 
+
+
+
+
+resetting cache False 11.335000000000036 
+
+
+
+
+resetting cache False 12.36099999999999 
+
+
+
+
+resetting cache False 11.918999999999983 
+
+
+
+
+resetting cache False 12.837999999999965 
+
+
+
+
+resetting cache False 12.482999999999947 
+
+
+
+
+resetting cache False 14.448000000000093 
+
+
+
+
+resetting cache False 11.134999999999991 
+
+
+
+
+resetting cache False 10.875 
+
+
+
+
+resetting cache False 18.561999999999898 
+
+
+
+
+resetting cache False 10.067999999999756 
+
+
+
+
+resetting cache False 19.501000000000204 
+
+
+
+
+resetting cache True -2850.6839999999997 
+
+
+
+
+resetting cache False 22.328000000000003 
+
+
+
+
+resetting cache False 13.311999999999955 
+
+
+
+
+resetting cache False 10.272000000000048 
+
+
+
+
+resetting cache False 10.496000000000095 
+
+
+
+
+resetting cache False 13.263999999999896 
+
+
+
+
+resetting cache False 11.567999999999984 
+
+
+
+
+resetting cache False 10.281999999999925 
+
+
+
+
+resetting cache False 14.567000000000007 
+
+
+
+
+resetting cache True -1914.375 
+
+
+
+
+resetting cache False 10.10499999999999 
+
+
+
+
+resetting cache False 10.99799999999999 
+
+
+
+
+resetting cache False 13.213000000000022 
+
+
+
+
+resetting cache False 17.26400000000001 
+
+
+
+
+resetting cache False 14.808999999999969 
+
+
+
+
+resetting cache False 13.382999999999925 
+
+
+
+
+resetting cache False 11.480999999999995 
+
+
+
+
+resetting cache False 12.55600000000004 
+
+
+
+
+resetting cache False 10.163000000000011 
+
+
+
+
+resetting cache False 20.94399999999996 
+
+
+
+
+resetting cache False 10.173000000000002 
+
+
+
+
+resetting cache False 10.259000000000015 
+
+
+
+
+resetting cache False 19.05100000000016 
+
+
+
+
+resetting cache False 10.378999999999905 
+
+
+
+
+resetting cache False 10.013999999999896 
+
+
+
+
+resetting cache False 11.083999999999833 
+
+
+
+
+resetting cache False 13.286000000000058 
+
+
+
+
+resetting cache False 10.585000000000036 
+
+
+
+
+resetting cache True -2587.4990000000003 
+
+
+
+
+resetting cache False 11.356000000000002 
+
+
+
+
+resetting cache False 19.012999999999998 
+
+
+
+
+resetting cache False 29.031999999999996 
+
+
+
+
+resetting cache False 18.561999999999898 
+
+
+
+
+resetting cache False 10.507000000000062 
+
+
+
+
+resetting cache False 12.95399999999995 
+
+
+
+
+resetting cache False 16.091999999999985 
+
+
+
+
+resetting cache False 11.011999999999944 
+
+
+
+
+resetting cache False 21.75 
+
+
+
+
+resetting cache False 23.488000000000056 
+
+
+
+
+resetting cache False 14.438000000000102 
+
+
+
+
+resetting cache False 16.951999999999998 
+
+
+
+
+resetting cache False 11.245999999999867 
+
+
+
+
+Perplexity: 75.49
