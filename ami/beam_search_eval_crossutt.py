@@ -111,14 +111,19 @@ def run_search(beam_fn, logps, alpha, beta):
     return search.return_text(0)'''
 
 @ray.remote(num_gpus=0, num_cpus=1)
-def run_search_meeting(meeting, id, beam_fn, alpha, beta, randomly_verbose=False):
+def run_search_meeting(meeting, id, beam_fn, alpha, beta, randomly_verbose=False, teacher_forcing=False):
     search = beam_fn(log_probs=meeting[0]['probs'], alpha=alpha, beta=beta)
+    prev_cache = None
     for i, _ in tqdm(enumerate(meeting), total=len(meeting)):
         #print(f'Utterance {i+1}/{len(meeting)}')
         search.run_search(use_tqdm=False)
         print(search.return_text(0)) if randomly_verbose and random.random() < 0.05 else None # print 5% of the time lol
         if i < len(meeting)-1:
-            search.next_utterance(new_log_probs=meeting[i+1]['probs'])
+            target = meeting[i]['targets'][0] if teacher_forcing else None
+            search.next_utterance(new_log_probs=meeting[i+1]['probs'], teacher_forcing=target, prev_cache=prev_cache)
+            prev_cache = {k:v.clone() for k,v in search.beams[0].state.items()} if teacher_forcing else None
+       
+
     return {'id':id, 'text':search.return_text(0)}
 
 def get_target_hyp_pairs(hyp_data, hyps):
@@ -206,7 +211,16 @@ def main(args):
   
         meetings = list(dev_hyps_sample.values())
         names = list(dev_hyps_sample.keys())
-        outputs = [run_search_meeting.remote(meeting, name, beamsearch_fn, alpha, beta, randomly_verbose=True) for meeting, name in zip(meetings, names)]
+        outputs = [
+            run_search_meeting.remote(
+                meeting, 
+                name, 
+                beamsearch_fn, 
+                alpha, 
+                beta, 
+                randomly_verbose=args.randomly_verbose,
+                teacher_forcing=args.teacher_forcing
+            ) for meeting, name in zip(meetings, names)]
         outputs = ray.get(outputs)
 
         predictions, targets = get_target_hyp_pairs(dev_hyps_sample, outputs)
@@ -231,8 +245,9 @@ if __name__ == '__main__':
     Note I've only written this for a batch size of 1 (lazy)
     '''
     parser = argparse.ArgumentParser() 
+    parser.add_argument('--teacher_forcing', action='store_true', help='whether to use teacher forcing')
 
-
+    parser.add_argument('-v', '--randomly_verbose', action='store_true', help='whether to print out the intermediate beam search output at random')
     parser.add_argument('-cache_length', '--cache_length', default=250, type=int, help='max length of cache')
 
     parser.add_argument('-load_tmp', '--load_tmp', default='ami.pkl', type=str, help='base name of logit hyp to load (full name = split+_+name')

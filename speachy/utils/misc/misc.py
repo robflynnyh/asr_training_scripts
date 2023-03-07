@@ -203,6 +203,9 @@ def eval_with_sclite(ref, hyp, SCLITE_PATH, mode='dtl all'):
     cmd = f'{SCLITE_PATH} -r {ref} -h {hyp} -i rm -o {mode} stdout > {hyp}.out'
     run_cmd(cmd)
     outf = read_text(f'{hyp}.out')
+    print(outf[0])
+    print(len(outf))
+    
     wer = [el for el in outf if 'Percent Total Error' in el][0]
     print(f'Saved output to {hyp}.out')
     return wer

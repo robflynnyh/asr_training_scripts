@@ -10,7 +10,7 @@ import torch
 import random
 
 import os 
-from einops import rearrange
+from einops import rearrange, repeat
 from speachy.rescoring.tools import (
         sort_hypothesis_by_recording, 
         order_recordings_by_start_time,
@@ -63,23 +63,38 @@ def get_text_batched_probability(args, model, tokenizer, batched_text, cached_st
     token_lens += (1 if add_bos else 0)
 
     targets = tokens.clone()
-    targets[:, :-1] = tokens[:, 1:] # shift targets by 1
+    if not exists(cached_states):
+        targets[:, :-1] = tokens[:, 1:] # shift targets by 1
+        targets = add_eos_token(targets, eos_id=0 if args.eosbos else -100, token_lens=token_lens) # pad targets if no eos 
+        mask = token_lens_to_mask(token_lens)
+        targets = mark_padding(targets, mask, pad_id=-100)
+    else:
+        # concat zero vector to end of targets
+        targets = torch.cat([targets, torch.zeros(targets.size(0), 1, device=targets.device, dtype=targets.dtype)], dim=1)
+        targets = add_eos_token(targets, eos_id=-100, token_lens=token_lens+1)
+        mask = token_lens_to_mask(token_lens+1)
+        targets = mark_padding(targets, mask, pad_id=-100)
 
-    targets = add_eos_token(targets, eos_id=0 if args.eosbos else -100, token_lens=token_lens) # pad targets if no eos 
-    mask = token_lens_to_mask(token_lens)
-    targets = mark_padding(targets, mask, pad_id=-100)
 
     items_in_batch = tokens.shape[0]
+    has_cache = False
     if exists(cached_states):
+        has_cache = True
         cached_states = {k: v.clone() for k, v in cached_states.items()}
         cached_states['cache'] = cached_states['cache'][:, :, 0, None].to(device) # (n_layers, (k,v), batch, n_heads, seq_len, h_dim)
         cached_states['cache'] = cached_states['cache'].expand(-1, -1, items_in_batch, -1, -1, -1).clone().contiguous()
         cached_states['cache_lengths'] = cached_states['cache_lengths'][0,None].to(device)
         cached_states['cache_lengths'] = cached_states['cache_lengths'].expand(items_in_batch).clone().contiguous()
-
+        first_token_pred = repeat(cached_states['next_sentence_pred'], '() n -> b () n', b=items_in_batch)
+   
 
     logits, _, cached_states = model(x=tokens, length=token_lens, cache=cached_states, durations=duration_data, sep=exists(cached_states))
     #print(cached_states.keys()) next_sentence_pred
+
+    if has_cache:
+        logits = torch.cat([first_token_pred, logits], dim=1)
+
+
 
     toadd = 1 if add_bos else 0
     logits = logits[:, toadd:, :] 
@@ -224,7 +239,11 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps, hyperparameters=No
 
 
     for i, utt in enumerate(tqdm(recording_hyps)):
-        kv_cache = {'cache': kvs_to_cache['cache'].clone(), 'cache_lengths': kvs_to_cache['cache_lengths'].clone()} if kvs_to_cache is not None else None 
+        kv_cache = {
+            'cache': kvs_to_cache['cache'].clone(), 
+            'cache_lengths': kvs_to_cache['cache_lengths'].clone(),
+            'next_sentence_pred': kvs_to_cache['next_sentence_pred'].clone(),
+            } if kvs_to_cache is not None else None 
 
         segment_start, segment_end = utt['meta_data']['timings'].values()
         duration = segment_end - segment_start
@@ -243,7 +262,11 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps, hyperparameters=No
 
             if target[0] != '':
                 _, cache = get_text_batched_probability(args, model, tokenizer, target, cached_states=kv_cache)
-                kvs_to_cache = {'cache': cache['cache'].clone(), 'cache_lengths': cache['cache_lengths'][0, None].clone()}  #debug thing'''''
+                kvs_to_cache = {
+                    'cache': cache['cache'].clone(), 
+                    'cache_lengths': cache['cache_lengths'][0, None].clone(),
+                    'next_sentence_pred': cache['next_sentence_pred'][0].clone(),
+                } 
             else:
                 kvs_to_cache = kv_cache
 
@@ -275,8 +298,12 @@ def compute_beam_ppls(args, model, tokenizer, recording_hyps, hyperparameters=No
                 )
                 for ix, b_ix in enumerate(batch_stack):
                     if not args.use_targets and ix == 0:
-                        kvs_to_cache = {'cache': cache['cache'][:, :, 0, None].clone(), 'cache_lengths': cache['cache_lengths'][0, None].clone()}
-                        kvs_to_cache['cache'] = kvs_to_cache['cache'][:, :, :, :, :kvs_to_cache['cache_lengths'].item()]
+                        kvs_to_cache = {
+                            'cache': cache['cache'][:, :, 0, None].clone(), 
+                            'cache_lengths': cache['cache_lengths'][0, None].clone(),
+                            'next_sentence_pred': cache['next_sentence_pred'][0].clone(),
+                        }
+                        kvs_to_cache['cache'] = kvs_to_cache['cache'][:, :, :, :, :kvs_to_cache['cache_lengths'].item()] # trim to max length
                         
               
                     cur_tlm_prob = tlm_probs[ix]
@@ -346,11 +373,12 @@ def run_random_search(args, model, tokenizer, hypothesis):
     args.tlm_mean = standardisation_stats['tlm_mean']
     args.tlm_std = standardisation_stats['tlm_std']
     
-    bpe_lm_weights_range = [-0.5, 0.5]
-    tlm_scales = [10.0, 69.0]
-    ngram_scales = [0.0, 2.3]
+    bpe_lm_weights_range = [args.BPE_lower_range, args.BPE_upper_range]
+    tlm_scales = [args.TLM_lower_range, args.TLM_upper_range]
+    ngram_scales = [args.NGRAM_lower_range, args.NGRAM_upper_range]
     length_penalties = [0.0, 0.0] #not use  d anymore
-    bpe_length_penalty_weights = [0.8, 4.75]
+    bpe_length_penalty_weights = [args.BPE_length_penalty_lower_range, args.BPE_length_penalty_upper_range]
+    
     '''
     bpe_lm_weights_range = [-0.6, 0.6]
     tlm_scales = [0.0, 35.0]
@@ -448,7 +476,7 @@ def main(args, hypothesis_dev, hypothesis_test):
         hypothesis_dev = sort_hypothesis_by_recording(hypothesis_dev)
         hypothesis_dev = order_recordings_by_start_time(hypothesis_dev)
     if hypothesis_test.__class__.__name__ == 'list': # only a list if it hasn't been processed yet
-        assert args.use_cached_scores == False, 'need processed hypothesis lists to use cached scores'
+        #assert args.use_cached_scores == False, 'need processed hypothesis lists to use cached scores'
         hypothesis_test = sort_hypothesis_by_recording(hypothesis_test)
         hypothesis_test = order_recordings_by_start_time(hypothesis_test)
 
@@ -456,28 +484,34 @@ def main(args, hypothesis_dev, hypothesis_test):
     hyperparameters = get_hyperparameters(args=args)
     if args.run_random_search:
         hyperparameters = run_random_search(args, model, tokenizer, hypothesis_dev)
+        exit()
         #if args.use_top_sample:
         hypothesis_test = compute_lm_ppls(args, model, tokenizer, hypothesis_test, hyperparameters=hyperparameters)
         
     '''elif args.use_cached_scores == False:
         hypothesis = compute_lm_ppls(args, model, tokenizer, hypothesis, hyperparameters=hyperparameters if not args.use_top_sample else None)'''
 
-    standardise_stats = get_standardisation_stats(hypothesis=hypothesis_dev)
-    hyperparameters['tlm_mean'] = torch.tensor(standardise_stats['tlm_mean'])
-    hyperparameters['tlm_std'] = torch.tensor(standardise_stats['tlm_std'])
+    hypothesis_dev = compute_lm_ppls(args, model, tokenizer, hypothesis_dev, hyperparameters=hyperparameters)
+    hypothesis_dev = rescore_speakers(args, hypothesis_dev, hyperparmeters=hyperparameters)
+    
+    wer_dev = compute_rescore_wer(hypothesis_dev)
+    print(f'WER DEV: {wer_dev}')
  
-    hypothesis = rescore_speakers(args, hypothesis_test, hyperparmeters=hyperparameters)
+    hypothesis_test = compute_lm_ppls(args, model, tokenizer, hypothesis_test, hyperparameters=hyperparameters)
+    hypothesis_test = rescore_speakers(args, hypothesis_test, hyperparmeters=hyperparameters)
 
-    wer = compute_rescore_wer(hypothesis)
+    #hypothesis = rescore_speakers(args, hypothesis_test, hyperparmeters=hyperparameters)
+
+    wer_test = compute_rescore_wer(hypothesis_test)
   
-    print(f'WER: {wer}')
+    print(f'WER TEST: {wer_test}')
 
-    save_hyp(args, hypothesis)
+    save_hyp(args, hypothesis_test)
 
 
     if args.eval_with_sclite != '':
         sclite_path = request_env(env_name='SCLITE_PATH', env_path=args.env_file)
-        hyps, refs, speakers, utt_durations = prepare_for_sclite(hypothesis)
+        hyps, refs, speakers, utt_durations = prepare_for_sclite(hypothesis_test)
         refname, hypname = write_trn_files(
             refs = refs,
             hyps = hyps,
@@ -495,6 +529,16 @@ def main(args, hypothesis_dev, hypothesis_test):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--TLM_upper_range', type=float, default=6.5)
+    parser.add_argument('--TLM_lower_range', type=float, default=14.0)
+    parser.add_argument('--NGRAM_upper_range', type=float, default=0.9)
+    parser.add_argument('--NGRAM_lower_range', type=float, default=1.2)
+    parser.add_argument('--BPE_upper_range', type=float, default=0.25)
+    parser.add_argument('--BPE_lower_range', type=float, default=0.475)
+    parser.add_argument('--BPE_length_penalty_upper_range', type=float, default=2.4)
+    parser.add_argument('--BPE_length_penalty_lower_range', type=float, default=2.1)
+
+
     parser.add_argument('--half_precision', action='store_true')
     parser.add_argument('--only_TLM', action='store_true')
 
@@ -518,16 +562,16 @@ if __name__ == '__main__':
     parser.add_argument('-random_search', '--run_random_search', action='store_true', help='whether to run random search')
     # hyperparameters for rescore
 #{'tlm_mean': tensor(-52.5750), 'tlm_std': tensor(60.1069), 'bpe_lm_weight': tensor(1.0423), 'tlm_scale': tensor(1.0404), 'ngram_scale': tensor(0.6793), 'bpe_length_penalty_weight': tensor(1.8295)
-    parser.add_argument('-bpe_lm_weight','--bpe_lm_weight', type=float, default=-0.21300449289418266,)
-    parser.add_argument('-bpe_len_pen', '--bpe_length_penalty_weight', type=float, default=3.2311803614139283)
-    parser.add_argument('-ngram_scale', '--ngram_scale', type=float, default=1.3453084084673785) # linearly scale AM logp by this factor')
+    parser.add_argument('-bpe_lm_weight','--bpe_lm_weight', type=float, default=-0.3962145729282976)
+    parser.add_argument('-bpe_len_pen', '--bpe_length_penalty_weight', type=float, default=2.308337905624975)
+    parser.add_argument('-ngram_scale', '--ngram_scale', type=float, default=1.3554887174299024) # linearly scale AM logp by this factor')
     parser.add_argument('-length_penalty','--length_penalty', type=float, default=0.0) 
-    parser.add_argument('-tlm_scale','--tlm_scale', type=float, default=34.35224912698284) # linearly scale TLM logp by this factor
-    parser.add_argument('-tlm_mean','--tlm_mean', type=float, default=-170.8522) # mean of TLM logp
-    parser.add_argument('-tlm_std','--tlm_std', type=float, default=105.8366) # std of TLM logp
+    parser.add_argument('-tlm_scale','--tlm_scale', type=float, default=35.108009837939065) # linearly scale TLM logp by this factor
+    parser.add_argument('-tlm_mean','--tlm_mean', type=float, default=-175.58627319335938) # mean of TLM logp
+    parser.add_argument('-tlm_std','--tlm_std', type=float, default=106.80474090576172) # std of TLM logp
     # hyperparameters for rescore
 
-    parser.add_argument('-random_search_time', '--random_search_time', type=float, default=720) # time limit for random search
+    parser.add_argument('-random_search_time', '--random_search_time', type=float, default=1000) # time limit for random search
 
     parser.add_argument('--temperature', type=float, default=0.85) # softmax temperature for TLM (sharpness of distribution, will punish mistakes more)
     parser.add_argument('-history','--max_history_len', type=int, default=-1)

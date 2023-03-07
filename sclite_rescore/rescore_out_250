@@ -1,0 +1,72 @@
+./checkpoints/open_sub_ft_ted/ft_ted_checkpoint_1259_id_36.pt
+odict_keys(['sep_token', 'layers.temperature', 'layers.positional_bias.mlp.0.0.weight', 'layers.positional_bias.mlp.0.0.bias', 'layers.positional_bias.mlp.1.0.weight', 'layers.positional_bias.mlp.1.0.bias', 'layers.positional_bias.mlp.2.weight', 'layers.positional_bias.mlp.2.bias', 'layers.layers.0.0.norm.weight', 'layers.layers.0.0.norm.bias', 'layers.layers.0.0.fn.temperature', 'layers.layers.0.0.fn.q_proj.weight', 'layers.layers.0.0.fn.kv_proj.weight', 'layers.layers.0.0.fn.out_proj.weight', 'layers.layers.0.1.norm.weight', 'layers.layers.0.1.norm.bias', 'layers.layers.0.1.fn.0.proj.weight', 'layers.layers.0.1.fn.0.proj.bias', 'layers.layers.0.1.fn.2.weight', 'layers.layers.0.1.fn.2.bias', 'layers.layers.1.0.norm.weight', 'layers.layers.1.0.norm.bias', 'layers.layers.1.0.fn.temperature', 'layers.layers.1.0.fn.q_proj.weight', 'layers.layers.1.0.fn.kv_proj.weight', 'layers.layers.1.0.fn.out_proj.weight', 'layers.layers.1.1.norm.weight', 'layers.layers.1.1.norm.bias', 'layers.layers.1.1.fn.0.proj.weight', 'layers.layers.1.1.fn.0.proj.bias', 'layers.layers.1.1.fn.2.weight', 'layers.layers.1.1.fn.2.bias', 'layers.layers.2.0.norm.weight', 'layers.layers.2.0.norm.bias', 'layers.layers.2.0.fn.temperature', 'layers.layers.2.0.fn.q_proj.weight', 'layers.layers.2.0.fn.kv_proj.weight', 'layers.layers.2.0.fn.out_proj.weight', 'layers.layers.2.1.norm.weight', 'layers.layers.2.1.norm.bias', 'layers.layers.2.1.fn.0.proj.weight', 'layers.layers.2.1.fn.0.proj.bias', 'layers.layers.2.1.fn.2.weight', 'layers.layers.2.1.fn.2.bias', 'layers.layers.3.0.norm.weight', 'layers.layers.3.0.norm.bias', 'layers.layers.3.0.fn.temperature', 'layers.layers.3.0.fn.q_proj.weight', 'layers.layers.3.0.fn.kv_proj.weight', 'layers.layers.3.0.fn.out_proj.weight', 'layers.layers.3.1.norm.weight', 'layers.layers.3.1.norm.bias', 'layers.layers.3.1.fn.0.proj.weight', 'layers.layers.3.1.fn.0.proj.bias', 'layers.layers.3.1.fn.2.weight', 'layers.layers.3.1.fn.2.bias', 'layers.layers.4.0.norm.weight', 'layers.layers.4.0.norm.bias', 'layers.layers.4.0.fn.temperature', 'layers.layers.4.0.fn.q_proj.weight', 'layers.layers.4.0.fn.kv_proj.weight', 'layers.layers.4.0.fn.out_proj.weight', 'layers.layers.4.1.norm.weight', 'layers.layers.4.1.norm.bias', 'layers.layers.4.1.fn.0.proj.weight', 'layers.layers.4.1.fn.0.proj.bias', 'layers.layers.4.1.fn.2.weight', 'layers.layers.4.1.fn.2.bias', 'layers.layers.5.0.norm.weight', 'layers.layers.5.0.norm.bias', 'layers.layers.5.0.fn.temperature', 'layers.layers.5.0.fn.q_proj.weight', 'layers.layers.5.0.fn.kv_proj.weight', 'layers.layers.5.0.fn.out_proj.weight', 'layers.layers.5.1.norm.weight', 'layers.layers.5.1.norm.bias', 'layers.layers.5.1.fn.0.proj.weight', 'layers.layers.5.1.fn.0.proj.bias', 'layers.layers.5.1.fn.2.weight', 'layers.layers.5.1.fn.2.bias', 'layers.layers.6.0.norm.weight', 'layers.layers.6.0.norm.bias', 'layers.layers.6.0.fn.temperature', 'layers.layers.6.0.fn.q_proj.weight', 'layers.layers.6.0.fn.kv_proj.weight', 'layers.layers.6.0.fn.out_proj.weight', 'layers.layers.6.1.norm.weight', 'layers.layers.6.1.norm.bias', 'layers.layers.6.1.fn.0.proj.weight', 'layers.layers.6.1.fn.0.proj.bias', 'layers.layers.6.1.fn.2.weight', 'layers.layers.6.1.fn.2.bias', 'layers.layers.7.0.norm.weight', 'layers.layers.7.0.norm.bias', 'layers.layers.7.0.fn.temperature', 'layers.layers.7.0.fn.q_proj.weight', 'layers.layers.7.0.fn.kv_proj.weight', 'layers.layers.7.0.fn.out_proj.weight', 'layers.layers.7.1.norm.weight', 'layers.layers.7.1.norm.bias', 'layers.layers.7.1.fn.0.proj.weight', 'layers.layers.7.1.fn.0.proj.bias', 'layers.layers.7.1.fn.2.weight', 'layers.layers.7.1.fn.2.bias', 'layers.layers.8.0.norm.weight', 'layers.layers.8.0.norm.bias', 'layers.layers.8.0.fn.temperature', 'layers.layers.8.0.fn.q_proj.weight', 'layers.layers.8.0.fn.kv_proj.weight', 'layers.layers.8.0.fn.out_proj.weight', 'layers.layers.8.1.norm.weight', 'layers.layers.8.1.norm.bias', 'layers.layers.8.1.fn.0.proj.weight', 'layers.layers.8.1.fn.0.proj.bias', 'layers.layers.8.1.fn.2.weight', 'layers.layers.8.1.fn.2.bias', 'layers.layers.9.0.norm.weight', 'layers.layers.9.0.norm.bias', 'layers.layers.9.0.fn.temperature', 'layers.layers.9.0.fn.q_proj.weight', 'layers.layers.9.0.fn.kv_proj.weight', 'layers.layers.9.0.fn.out_proj.weight', 'layers.layers.9.1.norm.weight', 'layers.layers.9.1.norm.bias', 'layers.layers.9.1.fn.0.proj.weight', 'layers.layers.9.1.fn.0.proj.bias', 'layers.layers.9.1.fn.2.weight', 'layers.layers.9.1.fn.2.bias', 'layers.layers.10.0.norm.weight', 'layers.layers.10.0.norm.bias', 'layers.layers.10.0.fn.temperature', 'layers.layers.10.0.fn.q_proj.weight', 'layers.layers.10.0.fn.kv_proj.weight', 'layers.layers.10.0.fn.out_proj.weight', 'layers.layers.10.1.norm.weight', 'layers.layers.10.1.norm.bias', 'layers.layers.10.1.fn.0.proj.weight', 'layers.layers.10.1.fn.0.proj.bias', 'layers.layers.10.1.fn.2.weight', 'layers.layers.10.1.fn.2.bias', 'layers.layers.11.0.norm.weight', 'layers.layers.11.0.norm.bias', 'layers.layers.11.0.fn.temperature', 'layers.layers.11.0.fn.q_proj.weight', 'layers.layers.11.0.fn.kv_proj.weight', 'layers.layers.11.0.fn.out_proj.weight', 'layers.layers.11.1.norm.weight', 'layers.layers.11.1.norm.bias', 'layers.layers.11.1.fn.0.proj.weight', 'layers.layers.11.1.fn.0.proj.bias', 'layers.layers.11.1.fn.2.weight', 'layers.layers.11.1.fn.2.bias', 'embedding.weight', 'to_logits.weight', 'to_logits.bias', 'post_norm.weight', 'post_norm.bias', 'next_sentence_pred.gamma', 'next_sentence_pred.beta'])
+Loaded checkpoint from ./checkpoints/open_sub_ft_ted/ft_ted_checkpoint_1259_id_36.pt
+Epoch: 1259, Validation loss: 1.6872697673503374
+Loaded model ./checkpoints/open_sub_ft_ted/ft_ted_checkpoint_1259_id_36.pt with epoch 1259 and val_loss 1.6872697673503374
+ Model type: qknorm_shared
+Running grid search...
+Evaluating to get hypothesis... using top 100 beams 
+Computing perplexities for recording BrianCox_2009U, 1/8
+Computing perplexities for recording WadeDavis_2003, 2/8
+Computing perplexities for recording BarrySchwartz_2005G, 3/8
+Computing perplexities for recording CraigVenter_2008, 4/8
+Computing perplexities for recording BlaiseAguerayArcas_2007, 5/8
+Computing perplexities for recording DavidMerrill_2009, 6/8
+Computing perplexities for recording ElizabethGilbert_2009, 7/8
+Computing perplexities for recording AlGore_2009, 8/8
+getting standardisation stats for recording BrianCox_2009U, 1/8
+getting standardisation stats for recording WadeDavis_2003, 2/8
+getting standardisation stats for recording BarrySchwartz_2005G, 3/8
+getting standardisation stats for recording CraigVenter_2008, 4/8
+getting standardisation stats for recording BlaiseAguerayArcas_2007, 5/8
+getting standardisation stats for recording DavidMerrill_2009, 6/8
+getting standardisation stats for recording ElizabethGilbert_2009, 7/8
+getting standardisation stats for recording AlGore_2009, 8/8
+TLM mean: -170.85223388671875, TLM std: 105.8366470336914
+Running Random search
+Lowest WER: 0.0991166175898661 with params: bpe_lm_weight: -0.3741272506052161, tlm_scale: 69.89000969467321, ngram_scale: 1.8716957045815281, bpe_length_penalty_weight: 1.101760187637289
+Lowest WER: 0.09694983054614145 with params: bpe_lm_weight: -0.32289891718187513, tlm_scale: 24.10257294431747, ngram_scale: 1.7052281422687805, bpe_length_penalty_weight: 2.3336702207554403
+Lowest WER: 0.0951719539974443 with params: bpe_lm_weight: -0.32855801614895186, tlm_scale: 49.93356260823297, ngram_scale: 0.7526553144250733, bpe_length_penalty_weight: 1.3989665342055893
+Lowest WER: 0.09511639535529752 with params: bpe_lm_weight: -0.24982817530976908, tlm_scale: 35.04706679130392, ngram_scale: 1.2076674630202944, bpe_length_penalty_weight: 1.9960953823760217
+Lowest WER: 0.09494971942885716 with params: bpe_lm_weight: -0.20238019434833865, tlm_scale: 31.70707663516692, ngram_scale: 1.369882285041045, bpe_length_penalty_weight: 3.0986325753367474
+Best params: {'tlm_mean': tensor(-170.8522), 'tlm_std': tensor(105.8366), 'bpe_lm_weight': tensor(-0.2024), 'tlm_scale': tensor(31.7071), 'ngram_scale': tensor(1.3699), 'bpe_length_penalty_weight': tensor(3.0986)}
+Best wer: 0.09494971942885716
+Evaluating with sclite
+Writing trn files to ./sclite_rescore
+Writing ./sclite_rescore/ref_dev_rescore_250.trn and ./sclite_rescore/hyp_dev_rescore_250.trn
+All Done
+Running /exp/exp1/acp21rjf/SCTK/bin/sclite -r ./sclite_rescore/ref_dev_rescore_250.trn -h ./sclite_rescore/hyp_dev_rescore_250.trn -i rm -o dtl all stdout > ./sclite_rescore/hyp_dev_rescore_250.trn.out
+
+5341
+Saved output to ./sclite_rescore/hyp_dev_rescore_250.trn.out
+WER (sclite): Percent Total Error       =    9.6%   (1730)
+Computing perplexities for recording AimeeMullins_2009P, 1/11
+Computing perplexities for recording EricMead_2009P, 2/11
+Computing perplexities for recording MichaelSpecter_2010, 3/11
+Computing perplexities for recording GaryFlake_2010, 4/11
+Computing perplexities for recording DanBarber_2010, 5/11
+Computing perplexities for recording DanielKahneman_2010, 6/11
+Computing perplexities for recording BillGates_2010, 7/11
+Computing perplexities for recording RobertGupta_2010U, 8/11
+Computing perplexities for recording JaneMcGonigal_2010, 9/11
+Computing perplexities for recording JamesCameron_2010, 10/11
+Computing perplexities for recording TomWujec_2010U, 11/11
+getting standardisation stats for recording BrianCox_2009U, 1/8
+getting standardisation stats for recording WadeDavis_2003, 2/8
+getting standardisation stats for recording BarrySchwartz_2005G, 3/8
+getting standardisation stats for recording CraigVenter_2008, 4/8
+getting standardisation stats for recording BlaiseAguerayArcas_2007, 5/8
+getting standardisation stats for recording DavidMerrill_2009, 6/8
+getting standardisation stats for recording ElizabethGilbert_2009, 7/8
+getting standardisation stats for recording AlGore_2009, 8/8
+TLM mean: -170.85223388671875, TLM std: 105.8366470336914
+Rescored WER: 0.08512727272727273, First Pass WER: 0.08872727272727272
+WER: 0.08512727272727273
+Writing trn files to ./sclite_rescore
+Writing ./sclite_rescore/ref_test_rescore_250.trn and ./sclite_rescore/hyp_test_rescore_250.trn
+All Done
+Running /exp/exp1/acp21rjf/SCTK/bin/sclite -r ./sclite_rescore/ref_test_rescore_250.trn -h ./sclite_rescore/hyp_test_rescore_250.trn -i rm -o dtl all stdout > ./sclite_rescore/hyp_test_rescore_250.trn.out
+
+9815
+Saved output to ./sclite_rescore/hyp_test_rescore_250.trn.out
+WER (sclite): Percent Total Error       =    8.5%   (2341)

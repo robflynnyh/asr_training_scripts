@@ -194,6 +194,7 @@ class BeamSearch():
         self.log_probs = new_log_probs
         self.position = 0 # reset position
         self.beams = [self.beams[0]] # only keep best beam
+        apply_sep=True
         
         '''logps, state = self.language_model.get_initial_state() (debug)
         self.beams[0].state = state
@@ -202,25 +203,31 @@ class BeamSearch():
         if exists(teacher_forcing): # use gold tokens for the history
             if not exists(prev_cache):
                 _, prev_cache = self.language_model.get_initial_state()
-            tokens = self.tokenizer.text_to_ids(teacher_forcing)
-            token_lens = torch.tensor([len(tokens)])
-            tokens = torch.tensor(tokens)[None]
-            _, cache = self.language_model(input_ids=tokens, input_lengths=token_lens, states=prev_cache)
-            self.beams[0].state = cache
+            if teacher_forcing.strip() != '':
+                tokens = self.tokenizer.text_to_ids(teacher_forcing)
+                token_lens = torch.tensor([len(tokens)], dtype=torch.long)
+                tokens = torch.tensor(tokens, dtype=torch.long)[None]
+                _, cache = self.language_model(input_ids=tokens, input_lengths=token_lens, states=prev_cache)
+                self.beams[0].state = cache
+            else:
+                self.beams[0].state = prev_cache
+                apply_sep=False
         
-        self.beams[0].next_lm_token_lps = self.language_model.logits_to_lprobs(
-                        self.beams[0].state['next_sentence_pred'].squeeze()[None,None,:]
-                    ).squeeze()
+        if apply_sep: # not needed if we are using gold tokens and that are empty
+            self.beams[0].next_lm_token_lps = self.language_model.logits_to_lprobs(
+                            self.beams[0].state['next_sentence_pred'].squeeze()[None,None,:]
+                        ).squeeze()
 
-        if self.beams[0].am_sequence[-1] != self.blank_id:
-            self.beams[0].am_sequence.append(self.blank_id) # prevent collapse across utterances
-        self.language_model.apply_sep_token(beams=self.beams)
+            if self.beams[0].am_sequence[-1] != self.blank_id:
+                self.beams[0].am_sequence.append(self.blank_id) # prevent collapse across utterances
+            
+            self.language_model.apply_sep_token(beams=self.beams)
 
-        cache_len = self.beams[0].state['cache_lengths'][0]
-        if self.max_cache_length == -1 or cache_len <= self.max_cache_length:
-            pass
-        else:
-            self.beams[0].state = self.trim_cache(self.beams[0].state, self.max_cache_length)
+            cache_len = self.beams[0].state['cache_lengths'][0]
+            if self.max_cache_length == -1 or cache_len <= self.max_cache_length:
+                pass
+            else:
+                self.beams[0].state = self.trim_cache(self.beams[0].state, self.max_cache_length)
 
             
     @staticmethod
