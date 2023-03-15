@@ -10,7 +10,7 @@ import numpy as np
 from omegaconf.omegaconf import OmegaConf
 import json
 
-def load_checkpoint(args, model, optim=None, force_cpu=False):
+def     load_checkpoint(args, model, optim=None, force_cpu=False):
     checkpoint_path = args.checkpoint
     print(checkpoint_path)
     map_location = torch.device('cuda' if torch.cuda.is_available() and not force_cpu else 'cpu')
@@ -21,10 +21,12 @@ def load_checkpoint(args, model, optim=None, force_cpu=False):
     except Exception as e:
         model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         print(f'Error loading model state_dict: {e}, loading attempted with strict=False')
+
     if 'no_load_optim' in args.__dict__ and args.no_load_optim == True:
         print('Not loading optimizer')
     elif optim is not None:
         optim.load_state_dict(checkpoint['optimizer_state_dict'])
+ 
     epoch = checkpoint['epoch'] if 'epoch' in checkpoint else 0
     val_loss = checkpoint['val_loss'] if 'val_loss' in checkpoint else None
     print(f'Loaded checkpoint from {checkpoint_path}')

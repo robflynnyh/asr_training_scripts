@@ -139,7 +139,7 @@ def ___evaluate(args, model, corpus, decoder):
         speaker_ids = ["_".join(el[0]) for el in sub_batch['speakers']]
 
         if exists(prev_states) and exists(sub_batch['prev_state_indices']) and exists(prev_state_lens): 
-            prev_states = prev_states[ : , sub_batch['prev_state_indices']]
+            prev_states = prev_states[ : , :, sub_batch['prev_state_indices']]
             prev_state_lens = prev_state_lens[sub_batch['prev_state_indices']]
 
         model_inputs = {
@@ -152,7 +152,7 @@ def ___evaluate(args, model, corpus, decoder):
         model_out = model.forward(**model_inputs)
         log_probs, _, encoded_len, additional_outputs = model_out[0], model_out[1], model_out[2], model_out[-1]
         cached_kvs, full_kv_lens = additional_outputs['kvs_to_cache'], additional_outputs['full_kv_lens']
-        prev_states, prev_state_lens = None, None
+        prev_states, prev_state_lens = cached_kvs, full_kv_lens
         log_probs = log_probs.cpu().numpy()
         
         decoded = decode_lm(log_probs, decoder, beam_width=args.beam_size, encoded_lengths=encoded_len)
@@ -239,7 +239,7 @@ def evaluate(args, model, corpus, decoder):
             speaker_ids = ["_".join(el[0]) for el in sub_batch['speakers']]
 
             if exists(prev_states) and exists(sub_batch['prev_state_indices']) and exists(prev_state_lens): 
-                prev_states = prev_states[ : , sub_batch['prev_state_indices']]
+                prev_states = prev_states[ : , :, sub_batch['prev_state_indices']]
                 prev_state_lens = prev_state_lens[sub_batch['prev_state_indices']]
                 #print(prev_states.shape, 'states')
 

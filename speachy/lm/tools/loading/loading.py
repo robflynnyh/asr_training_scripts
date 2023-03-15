@@ -43,7 +43,22 @@ def load_qknorm_transformer(config:OmegaConf, tokenizer, **kwargs):
     add_ons = fetch_addons(config, tokenizer)
     for add_on in add_ons.keys():
         setattr(transformer, add_on, add_ons[add_on]) # add the add-ons to the transformer
+    return transformer
 
+def load_unitformer(config:OmegaConf, tokenizer, **kwargs):
+    from speachy.lm.models.unitformer import transformer_lm
+    config_kwargs = config.get('kwargs', {})
+    config_kwargs.update(kwargs)
+    transformer = transformer_lm(
+        dim = config.get('d_model', 256),
+        vocab_size = tokenizer.vocab_size,
+        depth = config.get('n_layers', 8),
+        heads = config.get('n_heads', 8),
+        dim_head = config.get('dim_head', 32),
+        causal = config.get('causal', True),
+        dropout = config.get('dropout', 0.1),
+        **config_kwargs
+    )
     return transformer
 
 def autoload(config:OmegaConf, tokenizer, **kwargs):
@@ -54,4 +69,6 @@ def autoload(config:OmegaConf, tokenizer, **kwargs):
 
     if 'qknorm' in mtype:
         return load_qknorm_transformer(cfg, tokenizer, **kwargs)
+    if 'unitformer' in mtype:
+        return load_unitformer(cfg, tokenizer, **kwargs)
 

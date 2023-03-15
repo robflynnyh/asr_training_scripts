@@ -81,9 +81,9 @@ model:
     ##
 
     ## VQ params
-    commitment_loss: 0.1 # set to 0.0 to disable commitment loss (will just rely on EMA of centroids (this works fine according to philwang))
+    commitment_loss: 0.0 # set to 0.0 to disable commitment loss (will just rely on EMA of centroids (this works fine according to philwang))
     codebook_dim: 6
-    codebook_size: 16
+    codebook_size: 64
 
 
     # Feed forward module's params
@@ -104,7 +104,7 @@ model:
     ### regularization
     dropout_ff: 0.1 # The dropout used in most of the Conformer Modules
     dropout_conv: 0.1 # The dropout used in the convolution module
-    dropout_att: 0.1 # The dropout for multi-headed attention modules
+    dropout_att: 0.3 # The dropout for multi-headed attention modules
     ##
 
 

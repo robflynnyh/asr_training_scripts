@@ -102,7 +102,7 @@ def validate_one_epoch(epoch, model, val_dataloader, device, sanity_check=False)
             targets, target_lengths = sub_batch['tokens'], sub_batch['token_lens']
 
             if exists(prev_states) and exists(sub_batch['prev_state_indices']) and exists(prev_state_lens):
-                prev_states, prev_state_lens = prev_states[:,sub_batch['prev_state_indices']], prev_state_lens[sub_batch['prev_state_indices']]
+                prev_states, prev_state_lens = prev_states[:,:,sub_batch['prev_state_indices']], prev_state_lens[sub_batch['prev_state_indices']]
                 state_data = move_to_device({'kvs': prev_states, 'kv_lens': prev_state_lens}, device=device)
                 prev_states, prev_state_lens = state_data['kvs'], state_data['kv_lens']
                 
@@ -145,8 +145,102 @@ def validate_one_epoch(epoch, model, val_dataloader, device, sanity_check=False)
     torch.cuda.empty_cache() # to avoid memory leaks
     return loss_end
 
-
 def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, scaler=None, ema=None):
+    model.train()
+    losses = [] # for storing effective losses
+    loss_iterim = [] # for storing loss of each step
+    #commit_loss_iterim = [] # for storing loss of each step
+    print('Training epoch')
+    pbar = tqdm(train_dataloader, total=len(train_dataloader))
+    autocast_device = 'cuda' if torch.cuda.is_available() else 'cpu' # for autocast if using mixed precision
+ 
+    for ix, batch in enumerate(pbar):
+        sub_batches = create_subbatches(**batch)
+        prev_states = None
+        prev_state_lens = None
+        steps = 0
+        total_sb_loss = 0
+        avg_commit_loss = 0
+        for iz, sub_batch in enumerate(sub_batches):
+            steps += 1
+            sub_batch = move_to_device(sub_batch, device)
+            targets, target_lengths = sub_batch['tokens'], sub_batch['token_lens']
+
+            if exists(prev_states) and exists(sub_batch['prev_state_indices']) and exists(prev_state_lens):
+                prev_states, prev_state_lens = prev_states[:,:,sub_batch['prev_state_indices']], prev_state_lens[sub_batch['prev_state_indices']]
+                state_data = move_to_device({'kvs': prev_states, 'kv_lens': prev_state_lens}, device=device)
+                prev_states, prev_state_lens = state_data['kvs'], state_data['kv_lens']
+
+            with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
+                model_inputs = {
+                    'input_signal': sub_batch['audio'],
+                    'input_signal_length': sub_batch['audio_lens'],
+                    'cached_kvs': prev_states,
+                    'cached_kv_lens': prev_state_lens,
+                }
+
+                model_out = model.forward(**model_inputs)
+                log_probs, interim_posteriors, encoded_len, additional_outputs = model_out[0], model_out[1], model_out[2], model_out[-1]
+                cached_kvs, full_kv_lens, commit_loss = additional_outputs['kvs_to_cache'], additional_outputs['full_kv_lens'], additional_outputs['commit_loss']
+                state_data = move_to_device({'kvs': cached_kvs, 'kv_lens': full_kv_lens}, device=device)
+                prev_states, prev_state_lens = state_data['kvs'], state_data['kv_lens']
+
+                if exists(interim_posteriors):
+                    interims = torch.empty(interim_posteriors.shape[0]).to(device)
+                    for ix, layer in enumerate(interim_posteriors):
+                        interim = model.loss(log_probs=layer, targets=targets, input_lengths=encoded_len, target_lengths=target_lengths)
+                        interims[ix] = interim
+                    interim_loss = torch.mean(interims)
+
+                loss_final = model.loss(log_probs=log_probs, targets=targets, input_lengths=encoded_len, target_lengths=target_lengths)
+                loss_a = loss_final if not exists(interim_posteriors) else INTERPOLATE * interim_loss + (1 - INTERPOLATE) * loss_final
+                #print(commit_loss, loss_a)
+                avg_commit_loss += commit_loss.item() if commit_loss.__class__.__name__ == 'Tensor' else 0
+                loss_a += commit_loss
+                # diff from batch size
+                loss_fraction = sub_batch['audio'].shape[0] / batch['audio'].shape[0]
+                loss_iterim.append((loss_a * sub_batch['audio'].shape[0]).item())
+                #commit_loss_iterim.append((commit_loss * sub_batch['audio'].shape[0]).item())
+                loss_a = loss_a * loss_fraction # so lr is not affected when sbatch size is different from batch size (different seq len)
+                total_sb_loss += loss_a
+        
+        avg_commit_loss = avg_commit_loss / steps
+        total_sb_loss = total_sb_loss / steps
+        scaler.scale(total_sb_loss).backward() if exists(scaler) else total_sb_loss.backward() # BPTT 
+        if args.clip_gradients == True:
+            scaler.unscale_(optim) if exists(scaler) else None
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_gradients_value)
+
+        scaler.step(optim) if exists(scaler) else optim.step()
+        scaler.update() if exists(scaler) else None
+        optim.zero_grad() 
+
+        if exists(schedular):
+            schedular.step()
+        if exists(ema):
+            ema.update() # update the moving average of the parameters
+        cur_lr = schedular.get_last_lr()[0] if exists(schedular) else optim.param_groups[0]['lr']
+
+        if exists(prev_states):
+            prev_states = prev_states.detach()
+
+        cur_loss = sum(loss_iterim) / batch['audio'].shape[0]
+        #cur_commit_loss = sum(commit_loss_iterim) / batch['audio'].shape[0] if len(commit_loss_iterim) > 0 and commit_loss_iterim[0] != None else None
+        loss_iterim = []
+        losses.append(cur_loss)
+        if args.wandb:
+            wandb.log({'train_loss': cur_loss, 'lrate': cur_lr, 'commit_loss': avg_commit_loss})
+        pbar.set_description(f'Loss: {cur_loss}, lrate: {cur_lr}')  
+
+    loss_end = sum(losses) / len(losses)
+    if args.wandb:
+        wandb.log({'train_loss_end': loss_end, 'epoch': epoch})
+
+    torch.cuda.empty_cache() # to avoid memory leaks
+
+    return loss_end
+
+def train_one_epoch___(epoch, model, optim, schedular, train_dataloader, device, scaler=None, ema=None):
     model.train()
     losses = [] # for storing effective losses
     loss_iterim = [] # for storing loss of each step
@@ -164,7 +258,7 @@ def train_one_epoch(epoch, model, optim, schedular, train_dataloader, device, sc
             targets, target_lengths = sub_batch['tokens'], sub_batch['token_lens']
 
             if exists(prev_states) and exists(sub_batch['prev_state_indices']) and exists(prev_state_lens):
-                prev_states, prev_state_lens = prev_states[:,sub_batch['prev_state_indices']], prev_state_lens[sub_batch['prev_state_indices']]
+                prev_states, prev_state_lens = prev_states[:,:,sub_batch['prev_state_indices']], prev_state_lens[sub_batch['prev_state_indices']]
                 state_data = move_to_device({'kvs': prev_states, 'kv_lens': prev_state_lens}, device=device)
                 prev_states, prev_state_lens = state_data['kvs'], state_data['kv_lens']
 
