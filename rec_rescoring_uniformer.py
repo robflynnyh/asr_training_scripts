@@ -6,7 +6,7 @@ import numpy as np
 from functools import reduce
 import torch
 import os
-
+import traceback
 from speachy.utils.misc import ( add_common_args, get_parameters, load_pkl )
 
 from speachy.utils.general import (
@@ -45,50 +45,14 @@ def get_edit_distance(hyps, target): # THIS ISN'T RIGHT
 
 flatten_nested_list = lambda l: [item for sublist in l for item in sublist]
     
-class ErrorAugmentation(): # https://arxiv.org/pdf/2009.01008.pdf
-    def __init__(self, insertion_p, substitution_p, deletion_p, corpus_words):
-        assert insertion_p + substitution_p + deletion_p <= 1, 'Augmentation probabilities must sum to less than 1'
-        self.insertion_p = insertion_p
-        self.substitution_p = substitution_p
-        self.deletion_p = deletion_p
-        self.do_nothing_p = 1 - (insertion_p + substitution_p + deletion_p)
-        self.select_action = lambda: np.random.choice(['insert', 'substitute', 'delete', 'do_nothing'], p=[insertion_p, substitution_p, deletion_p, self.do_nothing_p])
-        self.corpus_words = corpus_words
-
-    def drop_letter(self, word): # not used
-        # select random letter to drop
-        drop_idx = np.random.randint(len(word))
-        return word[:drop_idx] + word[drop_idx+1:]
-
-    def augment(self, utterance: str):
-        tokens = utterance.split()
-        augmented_tokens = []
-        for token in [" "] + tokens:
-            action = self.select_action()
-            if action == 'insert':
-                augmented_tokens += [token, np.random.choice(self.corpus_words)]
-            elif action == 'substitute':
-                augmented_tokens += [np.random.choice(self.corpus_words)]
-            elif action == 'delete':
-                continue
-            elif action == 'do_nothing':
-                augmented_tokens += [token]
-        return ' '.join(augmented_tokens).strip()
-
-    def augment_batch(self, batch):
-        return [self.augment(utt) for utt in batch]
-
 def tokenize_and_pad(utterances, tokenizer): # returns padded utterances and their lengths
     tokenized = [tokenizer.text_to_ids(utt) for utt in utterances]
     max_len = max(map(len, tokenized))
     padded_utts = np.array([utt + [0] * (max_len - len(utt)) for utt in tokenized])
     return padded_utts, np.array(list(map(len, tokenized)))
 
-def get_sub_batches(batch, tokenizer, augmentation_module):  
-    proc_utts = lambda utts, augment=False: tokenize_and_pad(
-        utterances = flatten_nested_list(utts) if not augment else augmentation_module.augment_batch(flatten_nested_list(utts)),
-        tokenizer = tokenizer
-    )
+def get_sub_batches(batch, tokenizer):  
+    proc_utts = lambda utts: tokenize_and_pad(flatten_nested_list(utts), tokenizer)
     sub_batches = []
     max_len = max(map(len, batch))
     for i in range(max_len):
@@ -123,13 +87,9 @@ def get_sub_batches(batch, tokenizer, augmentation_module):
         }
     
     for i, sub_batch in enumerate(sub_batches):
-        utts = sub_batch['utterances'][sub_batch['non_empty']].tolist()
-        padded_utts, acc_lengths = proc_utts(utts=utts, augment=False)
-        augmented_utterances, aug_lengths = proc_utts(utts=utts, augment=True)
+        padded_utts, acc_lengths = proc_utts(sub_batch['utterances'][sub_batch['non_empty']].tolist())
         sub_batches[i] = {
             'utterances': torch.as_tensor(padded_utts),
-            'augmented_utterances': torch.as_tensor(augmented_utterances),
-            'aug_lengths': torch.as_tensor(aug_lengths), # 'aug_lengths' is the length of the augmented utterance, not the original one
             'lengths': torch.as_tensor(acc_lengths),
             'scores': torch.tensor(flatten_nested_list((sub_batch['scores'][sub_batch['non_empty']]).tolist())),
             'durations': torch.tensor(sub_batch['durations'][sub_batch['non_empty']].astype(float)).to(torch.float32),
@@ -177,16 +137,7 @@ def create_dataset_samples(recordings, num_utterances, num_negatives, max_gap=10
 
 
 class Sampler(object):
-    def __init__(
-            self, 
-            samples, 
-            batch_size, 
-            tokenizer,
-            insetion_p=0.08,
-            deletion_p=0.10,
-            substitution_p=0.04, 
-            shuffle=True, 
-        ):
+    def __init__(self, samples, batch_size, tokenizer, shuffle=True):
         self.samples = samples
         self.batch_size = batch_size
         self.tokenizer = tokenizer
@@ -194,28 +145,11 @@ class Sampler(object):
         self.sample_indices = np.arange(len(self.samples))
         np.random.shuffle(self.sample_indices) if self.shuffle else None
 
-        corpus_words = []
-        for sample in self.samples:
-            text = sample[0][0][0]
-            corpus_words += text.split()
-        self.corpus_words = list(set(corpus_words))
-
-        self.augmentation_module = ErrorAugmentation(
-            insertion_p = insetion_p,
-            deletion_p = deletion_p,
-            substitution_p = substitution_p,
-            corpus_words = self.corpus_words
-        )
-    
         self.generator = self.__generator__() 
 
     def __generator__(self): 
         for i in range(0, len(self.samples), self.batch_size):
-            yield get_sub_batches(
-                batch = [self.samples[i] for i in self.sample_indices[i:i+self.batch_size]], 
-                tokenizer = self.tokenizer,
-                augmentation_module = self.augmentation_module
-            )
+            yield get_sub_batches([self.samples[i] for i in self.sample_indices[i:i+self.batch_size]], self.tokenizer)
 
     def __list__(self):
         return list(self.generator)
@@ -240,14 +174,14 @@ class Sampler(object):
 @torch.no_grad()
 def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
     model.eval()
-    val_dataloader = val_dataloader
+    val_dataloader = list(val_dataloader)
     pbar = tqdm(val_dataloader, total=len(val_dataloader))
     losses = []
     print('Evaluation epoch')
     for batch in pbar:
         prev_states = None
-        total_sb_losses = []
-        total_lengths = 0
+        total_sub_batch_loss = torch.zeros(model.layers.depth, device=device)
+        total_sub_batch_lengths = torch.zeros(model.layers.depth, device=device)
         for ix, sub_batch_ in enumerate(batch):
             sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True)
             #print(f'sub_batch {ix+1} / {len(batch)}')
@@ -261,57 +195,34 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
                 sb_idxs = torch.arange(sb_lengths.size(0))
                 sb_idxs = torch.cat([sb_idxs[ix].repeat(sb_lengths[ix]) for ix in range(sb_lengths.size(0))]).to(device)
                 prev_fetch = prev_fetch[sb_idxs]
-                prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
-                prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
-                prev_states['next_sentence_pred'] = prev_states['next_sentence_pred'][prev_fetch]
-                if args.shift_states:
-                    top_states = prev_states['cache'][-1][None]
-                    new_states = torch.cat([prev_states['cache'], top_states])
-                    prev_states['cache'] = new_states[1:] # shift states down by 1
+                for i in range(len(prev_states['layers'])):
+                    prev_states['layers'][i]['cache'] = prev_states['layers'][i]['cache'][:, :, prev_fetch] 
+                    prev_states['layers'][i]['cache_lengths'] = prev_states['layers'][i]['cache_lengths'][prev_fetch]
+                for i in range(len(prev_states['next_sentence_pred'])):
+                    prev_states['next_sentence_pred'][i] = prev_states['next_sentence_pred'][i][prev_fetch]
+                    
+    
             
             using_bos = not exists(prev_states) or args.bos_eos
             token_lens += 1 if using_bos else 0 # add 1 for bos if using
             tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
-            targets = tokens.clone()
-            if not exists(prev_states):
-                targets[:, :-1] = tokens[:, 1:]
-                eos_id = -100
-                targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
-                mask = token_lens_to_mask(token_lens)
-                targets = mark_padding(targets, mask, pad_id=-100)
-            else:
-                # concat zero vector to end of targets
-                targets = torch.cat([targets, torch.zeros(targets.size(0), 1, device=targets.device, dtype=targets.dtype)], dim=1)
-                eos_id = -100
-                targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens+1)
-                mask = token_lens_to_mask(token_lens+1)
-                targets = mark_padding(targets, mask, pad_id=-100)
-
-            logits, _, cached_kvs = model(
-                x=tokens, 
-                length=token_lens, 
-                cache=prev_states, 
-                durations=durations, 
-                sep=exists(prev_states)
+    
+            outputs = model(
+                labels=tokens,
+                length=token_lens,
+                cache=prev_states,
+                calc_loss=True,
             )
-
-            if exists(prev_states):
-                logits = torch.cat([prev_states['next_sentence_pred'], logits], dim=1)
-
-            loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
-
-            total_lengths += token_lens.sum().item()
-            total_sb_losses.append(loss.item() * token_lens.sum().item())
             
-            target_positions = sb_lengths.cumsum(dim=0) - sb_lengths # get the first position of each sub-batch
-            
-            prev_states = { # cache is [L, KV, B, H, N, D] ! (L = layers, KV = key/value, B = batch, H = heads, N = num tokens, D = dim)
-                'cache_lengths': cached_kvs['cache_lengths'][target_positions],
-                'cache': cached_kvs['cache'][:, :, target_positions], # only keep states from the "gold" hypothesis (teacher forcing)
-                'next_sentence_pred': cached_kvs['next_sentence_pred'][target_positions].clone()
-            } if exists(cached_kvs) else None
 
-        losses.append(sum(total_sb_losses) / total_lengths)
+            token_len_thing = (outputs['lengths']).sum(-1)
+            token_len_thing[len(outputs['token_losses']):] = 0
+            total_sub_batch_lengths += token_len_thing
+            total_sub_batch_loss[:len(outputs['token_losses'])] += outputs['token_losses'] * token_len_thing[:len(outputs['token_losses'])]
+
+            prev_states = outputs['cache']
+
+        losses.append((total_sub_batch_loss / total_sub_batch_lengths).mean().item())
   
         if sanity_check:
             return True
@@ -334,25 +245,25 @@ def intermediate_loss(loss_fn, interim_logits, targets):
 
 def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None):
     model.train()
-    train_dataloader = train_dataloader #list(tqdm(train_dataloader, total=len(train_dataloader), desc='augmenting data'))
+    train_dataloader = list(train_dataloader)
     pbar = tqdm(train_dataloader, total=len(train_dataloader))
     losses = []
     loss_iterim = []
     autocast_device = 'cuda' if torch.cuda.is_available() else 'cpu' # for autocast if using mixed precision
-    print('Training epoch')
+    print('Training epoch') 
     for batch in pbar:
         prev_states = None
-        total_sub_batch_loss = 0
-        total_sub_batch_lengths = 0
+        total_sub_batch_loss = torch.zeros(model.layers.depth, device=device)
+        total_sub_batch_codebook_util = torch.zeros(model.layers.depth, device=device)
+        total_sub_batch_lengths = torch.zeros(model.layers.depth, device=device)
+        total_sub_batch_commit_loss = []
         with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
             for ix, sub_batch_ in enumerate(batch):
                 #print(f'sub_batch {ix+1} / {len(batch)}')
                 sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True) 
 
                 tokens, token_lens = sub_batch['utterances'], sub_batch['lengths']
-                aug_tokens, aug_token_lens = sub_batch['augmented_utterances'], sub_batch['aug_lengths']
-
-                #durations = sub_batch['durations'][:,None] if args.length_prediction else None
+                durations = sub_batch['durations'][:,None] if args.length_prediction else None
                 prev_fetch, sb_lengths = sub_batch['prev_fetch'], sub_batch['sb_lengths'] # scores are negative for the softmax
                 sb_starts = sb_lengths.cumsum(dim=0) - sb_lengths 
 
@@ -361,69 +272,50 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                     sb_idxs = torch.arange(sb_lengths.size(0))
                     sb_idxs = torch.cat([sb_idxs[ix].repeat(sb_lengths[ix]) for ix in range(sb_lengths.size(0))]).to(device)
                     prev_fetch = prev_fetch[sb_idxs]
-                    prev_states['cache'] = prev_states['cache'][:, :, prev_fetch] 
-                    prev_states['cache_lengths'] = prev_states['cache_lengths'][prev_fetch]
-                    prev_states['next_sentence_pred'] = prev_states['next_sentence_pred'][prev_fetch]
-                    if args.shift_states:
-                        top_states = prev_states['cache'][-1][None]
-                        new_states = torch.cat([prev_states['cache'], top_states])
-                        prev_states['cache'] = new_states[1:] # shift states down by 1
-        
+                    for i in range(len(prev_states['layers'])):
+                        prev_states['layers'][i]['cache'] = prev_states['layers'][i]['cache'][:, :, prev_fetch] 
+                        prev_states['layers'][i]['cache_lengths'] = prev_states['layers'][i]['cache_lengths'][prev_fetch]
+                    for i in range(len(prev_states['next_sentence_pred'])):
+                        prev_states['next_sentence_pred'][i] = prev_states['next_sentence_pred'][i][prev_fetch]
+                       
                 using_bos = not exists(prev_states) or args.bos_eos
                 token_lens += 1 if using_bos else 0 # add 1 for bos if using
-                aug_token_lens += 1 if using_bos else 0 # add 1 for bos if using
                 tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
-                aug_tokens = add_bos(aug_tokens, bos_token_id=0) if using_bos else aug_tokens # add bos only if this is the first sub-batch
-                targets = tokens.clone()
 
-                if not exists(prev_states):
-                    targets[:, :-1] = tokens[:, 1:]
-                    eos_id = -100
-                    targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens)
-                    mask = token_lens_to_mask(token_lens)
-                    targets = mark_padding(targets, mask, pad_id=-100)
-                else:
-                    # concat zero vector to end of targets
-                    targets = torch.cat([targets, torch.zeros(targets.size(0), 1, device=targets.device, dtype=targets.dtype)], dim=1)
-                    eos_id = -100
-                    targets = add_eos(targets, eos_id=eos_id, token_lens=token_lens+1)
-                    mask = token_lens_to_mask(token_lens+1)
-                    targets = mark_padding(targets, mask, pad_id=-100)
 
-                logits, _, _ = model(
-                    x=tokens, 
-                    length=token_lens, 
-                    cache=prev_states,  
-                    sep=exists(prev_states)
-                )
-
-                _, _, cached_kvs = model( # cache comes from augmented history
-                    x=aug_tokens,
-                    length=aug_token_lens,
+                outputs = model(
+                    labels=tokens,
+                    length=token_lens,
                     cache=prev_states,
-                    sep=exists(prev_states)
+                    calc_loss=True,
                 )
-         
-                if exists(prev_states):
-                    logits = torch.cat([prev_states['next_sentence_pred'], logits], dim=1)
 
-                loss = loss_ce(logits=logits, labels=targets, ignore_index=-100)
-           
-                total_sub_batch_lengths += token_lens.sum()
-                total_sub_batch_loss += loss * token_lens.sum() 
+                targets_len = {f'codebook_util_layer_{lth}': outputs['targets'][lth].reshape(-1).unique().shape[0] / model.layers.vocab_fn(lth)
+                    for lth in range(len(outputs['targets']))}
+
+                token_len_thing = (outputs['lengths']).sum(-1)
+                token_len_thing[len(outputs['token_losses']):] = 0
+                total_sub_batch_lengths += token_len_thing
+                total_sub_batch_loss[:len(outputs['token_losses'])] += outputs['token_losses'] * token_len_thing[:len(outputs['token_losses'])]
+                total_sub_batch_commit_loss.append(outputs['commitment_loss'])
+
+                codebook_util = torch.tensor(list(targets_len.values()), device=device)
+                total_sub_batch_codebook_util += codebook_util * token_len_thing[:len(outputs['token_losses'])]
     
-                target_positions = sb_starts
-                prev_states = { # cache is [L, KV, B, H, N, D] ! (L = layers, KV = key/value, B = batch, H = heads, N = num tokens, D = dim)
-                    'cache_lengths': cached_kvs['cache_lengths'][target_positions],
-                    'cache': cached_kvs['cache'][:, :, target_positions], # only keep states from the "gold" hypothesis
-                    'next_sentence_pred': cached_kvs['next_sentence_pred'][target_positions].clone()
-
-                } if exists(cached_kvs) else None
+                prev_states = outputs['cache']
 
 
-        total_sub_batch_loss = total_sub_batch_loss / total_sub_batch_lengths
+        total_sub_batch_loss = (total_sub_batch_loss / total_sub_batch_lengths)
+        total_sub_batch_codebook_util = (total_sub_batch_codebook_util / total_sub_batch_lengths)
+        
+        per_layer_loss = {f'loss_layer_{i}': total_sub_batch_loss[i].item() for i in range(len(total_sub_batch_loss))}
+        total_sub_batch_loss_todisplay = total_sub_batch_loss.mean().item()
+        total_sub_batch_loss = (total_sub_batch_loss * total_sub_batch_codebook_util**2).mean()
+
+        total_sub_batch_commit_loss = sum(total_sub_batch_commit_loss) / len(total_sub_batch_commit_loss)
+        total_sub_batch_loss += total_sub_batch_commit_loss
         total_sub_batch_lengths = 0
-        losses.append(total_sub_batch_loss.item())
+        losses.append(total_sub_batch_loss_todisplay)
         scaler.scale(total_sub_batch_loss).backward() if exists(scaler) else total_sub_batch_loss.backward()
         if args.clip_gradients == True:
             scaler.unscale_(optim) if exists(scaler) else None
@@ -439,7 +331,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
         cur_lr = schedular.get_last_lr()[0] if exists(schedular) else optim.param_groups[0]['lr']
 
         if args.wandb:
-            wandb.log({'train_loss': total_sub_batch_loss, 'lrate': cur_lr})
+            wandb.log({'train_loss': total_sub_batch_loss_todisplay,'lrate': cur_lr,'epoch': epoch, **per_layer_loss, **targets_len, 'commitment_loss': total_sub_batch_commit_loss.item()})
 
             
     loss_end = sum(losses) / len(losses)
@@ -496,7 +388,7 @@ def main(args):
         'shuffle': True,
     }
 
-    ema = ExponentialMovingAverage(model.parameters(), decay=0.9999) 
+    ema = ExponentialMovingAverage(model.parameters(), decay=0.99999) 
     scaler = GradScaler() if args.mixed_precision else None
 
     run_config = {'run_args': args.__dict__, 'model_config': config, 'total_params': total_params}
@@ -572,6 +464,10 @@ def main(args):
                 to_remove = saved_checkpoints.pop()
                 os.remove(to_remove['path']) 
         except RuntimeError as e:
+            print(f'RuntimeError: {e}')
+            # get full traceback
+            traceback.print_exc()
+
             if str(e).startswith('CUDA out of memory'):
                 print('CUDA out of memory, trying to recover')
                 torch.cuda.empty_cache()

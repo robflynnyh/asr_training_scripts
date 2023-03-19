@@ -7,7 +7,7 @@ from torch.utils.checkpoint import checkpoint # # gradient/activation checkpoint
 from functools import partial
 import string
 from math import ceil
-from vector_quantize_pytorch import VectorQuantize
+from vector_quantize_pytorch import RandomProjectionQuantizer, VectorQuantize
 from typing import Optional, Tuple, List, Dict, Union, Callable
 
 def exists(val):
@@ -202,9 +202,9 @@ class Attention(nn.Module):
         return out, kv
 
 class PreNorm(nn.Module):
-    def __init__(self, dim, fn):
+    def __init__(self, dim, fn, elementwise_affine=True):
         super().__init__()
-        self.norm = nn.LayerNorm(dim)
+        self.norm = nn.LayerNorm(dim, elementwise_affine=elementwise_affine)
         self.fn = fn
 
     def forward(self, x, *args, **kwargs):
@@ -223,20 +223,57 @@ class GLU(nn.Module):
 
 
 class Halfer(nn.Module): # uses conv instead of avg_pool1d
-    def __init__(self, dim):
+    def __init__(self, dim, exp_f=2):
         super().__init__()
-        self.conv = nn.Conv1d(dim, dim*2, kernel_size=2, stride=2, padding=0, bias=True)
+        self.conv = nn.Conv1d(dim, dim*exp_f, kernel_size=2, stride=2, padding=0, bias=True)
         self.act = nn.SiLU()
-        self.ff = nn.Linear(dim*2, dim)
+        self.empty_vec = nn.Parameter(torch.zeros(1,1,dim))
+        self.ff = nn.Linear(dim*exp_f, dim)
 
     def forward(self, x, length):
         if x.shape[1] % 2 == 1:
-            x = torch.cat([x, torch.zeros_like(x[:,0:1,:])], dim=1)
+            x = torch.cat([x, self.empty_vec.expand(x.shape[0],1,-1)], dim=1)
             length += 1
         x = self.conv(x.transpose(1,2)).transpose(1,2)
         x = self.ff(self.act(x))
         length = (length + 1).div(2).floor().long()
         return x, length
+
+class InverseHalfer(nn.Module): # opposite of Halfer
+    def __init__(self, dim, exp_f=2):
+        super().__init__()
+        self.conv = nn.ConvTranspose1d(dim, dim*exp_f, kernel_size=2, stride=2, padding=0, bias=True)
+        self.act = nn.SiLU()
+        self.ff = nn.Linear(dim*exp_f, dim)
+
+    def forward(self, x, length):
+        x = self.conv(x.transpose(1,2)).transpose(1,2)
+        x = self.ff(self.act(x))
+        length = length.mul(2)
+        return x, length
+
+class HalferBlock(nn.Module):
+    def __init__(self, dim, exp_f=2):
+        super().__init__()
+        self.halfer = PreNorm(dim=dim, fn=Halfer(dim, exp_f=exp_f))
+        self.inverse_halfer = PreNorm(dim=dim, fn=InverseHalfer(dim, exp_f=exp_f))
+        self.loss = nn.MSELoss(reduction='none')
+
+    def forward(self, x, length, mask=None):
+        halved_x, halved_length = self.halfer(x, length)
+        def recon_loss_fn(quantized_x):
+            restored_x, _ = self.inverse_halfer(quantized_x, halved_length)
+            restored_x = restored_x[:, :x.shape[1], :] # trim to original length
+            loss = torch.tensor([0.], device=x.device)
+            if self.training:
+                loss = self.loss(restored_x, x)
+                if mask is not None: # mask out padding
+                    loss.masked_fill_(mask[..., None], 0.)
+                loss = loss.mean()
+            return loss, restored_x
+        return halved_x, halved_length, recon_loss_fn
+
+
 
 class PredictionLayer(nn.Module):
     def __init__(self, dim, n_classes):
@@ -259,6 +296,8 @@ class NextTokenPredictor(nn.Module):
         last_logits = last_logits * self.gamma + self.beta
         return last_logits[:,None,:]
 
+
+
 class transformer(nn.Module):
     def __init__(
             self, 
@@ -277,8 +316,10 @@ class transformer(nn.Module):
         ff_mult = kwargs.get('ff_mult', 4)
         self.checkpoint_every_n = kwargs.get('checkpoint_every_n', 0)
         self.base_vocab = base_vocab_size
-        self.max_vocab = kwargs.get('max_vocab', 1000)
-        commitment_weight = kwargs.get('commitment_weight', 0.1)
+        self.max_vocab = kwargs.get('max_vocab', 10000)
+        commitment_weight = kwargs.get('commitment_weight', 1.0)
+
+        self.embedding = nn.Embedding(base_vocab_size, dim)
 
         self.causal = causal
 
@@ -290,10 +331,12 @@ class transformer(nn.Module):
             log_distance = False,
             norm = False
         )
+        self.halfer = HalferBlock(dim, exp_f=4)
 
-        vocab_fn = lambda l: min(self.max_vocab, ceil(self.base_vocab * 1.5 * l)) + self.base_vocab
+        self.vocab_fn = lambda l: min(self.max_vocab, ceil(((self.base_vocab * l)**1.5))) + self.base_vocab
         self.layers = nn.ModuleList([])
         for lth in range(depth):
+            print(f'v: {self.vocab_fn(lth)}')
             self.layers.append(nn.ModuleList([
                 PreNorm(dim, Attention(
                     dim, 
@@ -303,18 +346,30 @@ class transformer(nn.Module):
                     dropout=dropout,
                     **kwargs
                 )),
+                PreNorm(dim, Attention(
+                    dim, 
+                    n_heads=heads, 
+                    head_dim=dim_head, 
+                    causal=causal,
+                    dropout=dropout,
+                    **kwargs
+                )),
                 PreNorm(dim, self.ff(dim, mult=ff_mult)),
-                PredictionLayer(dim, vocab_fn(lth)),
-                NextTokenPredictor(n_classes=vocab_fn(lth)),
-                PreNorm(dim, Halfer(dim=dim)) if lth < depth - 1 else None, # no halving in the last layer
-                VectorQuantize(
+                PreNorm(dim, self.ff(dim, mult=ff_mult)),
+                PredictionLayer(dim, self.vocab_fn(0)) if lth==0 else PredictionLayer(dim, dim),
+                NextTokenPredictor(n_classes=self.vocab_fn(lth)),
+                PreNorm(dim, VectorQuantize(
                     dim = dim,
-                    codebook_size=vocab_fn(lth + 1),
-                    codebook_dim=12,
-                    kmeans_init=True,
-                    use_cosine_sim=True,
+                    codebook_dim = 64,
+                    codebook_size = self.vocab_fn(lth + 1),
                     commitment_weight=commitment_weight,
-                ) if lth < depth - 1 else None # no vector quantization in the last layer
+                    kmeans_init = True,
+                    orthogonal_reg_weight = 10.0,
+                    orthogonal_reg_max_codes = 128,
+                    use_cosine_sim = True,
+                    decay=0.9,
+                    threshold_ema_dead_code=0.05,
+                )) if lth < depth - 1 else None # no vector quantization in the last layer
             ]))
 
     @staticmethod
@@ -366,6 +421,7 @@ class transformer(nn.Module):
     def create_masks_and_positions(self, x, length, cache): 
         x_len = length if length is not None else torch.tensor(x.shape[-2]).expand(x.shape[0])
         cache_len = cache['cache_lengths'] if exists(cache) else 0
+
         total_len = x_len + cache_len
         kv_mask = torch.arange(total_len.max(), device=x.device).expand(len(total_len), -1) >= total_len.unsqueeze(-1)
         q_mask = torch.arange(x_len.max(), device=x.device).expand(len(x_len), -1) >= x_len.unsqueeze(-1)
@@ -394,51 +450,90 @@ class transformer(nn.Module):
     def forward(self, x, length, cache=None, **kwargs):
         
         intermediate_logits = []
+        layer_below_predictions = []
         next_token_preds = []
+        
         intermediate_targets = [None] # for the first layer we use ground truth tokens as targets
         commitment_loss = 0
+
         cache_lengths = []
         lengths = [length.clone()]
         cached_kvs = []
+
         curcache = cache[0] if exists(cache) else None
         mask, attn_mask, total_lens, x_len, cache_len, pos_bias = self.create_masks_and_positions(x, length, curcache)
-        cache_lengths.append(total_lens)
         cache_indices = self.get_cache_indices(x_len, cache_len, curcache['cache'], x) if exists(curcache) else None
     
-        for i, (attn, ff, predlayer, nextTokenPred, halfer, vq) in enumerate(self.layers):
+        for i, (attn1, attn2, ff1, ff2, predl, ntpred, vq) in enumerate(self.layers):
 
-            
-            a_out, kv = self.checkpoint(i, attn, x, pos_bias, attn_mask, self.get_cache(curcache), cache_indices)
+            a_out, kv = self.checkpoint(i, attn1, x, pos_bias, attn_mask, self.get_cache(curcache), cache_indices)
             x = a_out + x
             cached_kvs.append(kv[None])
+            cache_lengths.append(total_lens)
+            x = self.checkpoint(i, ff1, x) + x 
+            a_out, kv = self.checkpoint(i, attn2, x, pos_bias, attn_mask, self.get_cache(curcache), cache_indices)
+            x = a_out + x
+            cached_kvs.append(kv[None])
+            cache_lengths.append(total_lens)
+            x = self.checkpoint(i, ff2, x) + x
 
-            x = self.checkpoint(i, ff, x) + x 
-
-            pred = self.checkpoint(i, predlayer, x)
-            intermediate_logits.append(pred)
-            next_token_preds.append(nextTokenPred(pred, length))
-            
+            if i == 0:
+                pred = self.checkpoint(i, predl, x)
+                intermediate_logits.append(pred)
+                ntp = ntpred(pred, length)
+                next_token_preds.append(ntp)
+            else:
+                pred_emb_proj = self.checkpoint(i, predl, x)
+                belowvq = self.layers[i-1][-1]
+                pred_emb = belowvq.fn.project_in(belowvq.norm(pred_emb_proj))
+                pred_sim = einsum('bnd, vd -> bnv', pred_emb, belowvq.fn.codebook.detach())
+                intermediate_logits.append(pred_sim)
+                ntp = ntpred(pred_sim, length)
+                next_token_preds.append(ntp)
+        
+            if i > 0: # decomposed into layer belows sequence
+                inverse_halfer = self.halfer.inverse_halfer
+                lb_x, _, lb_lengths = *inverse_halfer(pred_emb_proj, length), lengths[-2]
+                lb_x_trim = lb_x[:, :lb_lengths.max()]
+                if i-1!=0:
+                    belowvq = self.layers[i-2][-1]
+                    lb_x_cb = belowvq.fn.project_in(belowvq.norm(lb_x_trim))
+                    lb_cb_pred = einsum('bnd, vd -> bnv', lb_x_cb, belowvq.fn.codebook.detach())
+                    layer_below_predictions.append(lb_cb_pred)
+                else:
+                    lbp = einsum('bnd, vd -> bnv', lb_x_trim, self.embedding.weight.detach())
+                    layer_below_predictions.append(lbp)
+              
             if exists(vq):
-                x, length = halfer(x=x, length=length)
+                x, length, recon_loss_fn = self.halfer(x=x, length=length, mask=mask)
+
                 lengths.append(length.clone())
                 curcache = cache[i+1] if exists(cache) else None
                 mask, attn_mask, total_lens, x_len, cache_len, pos_bias = self.create_masks_and_positions(x, length, curcache)
-                cache_lengths.append(total_lens)
+            
                 cache_indices = self.get_cache_indices(x_len, cache_len, curcache['cache'], x) if exists(curcache) else None
-                _, indices, commit_loss = vq(x, ~mask)
-                commitment_loss += commit_loss.sum()
-                intermediate_targets.append(indices)
 
-        cached_kvs = [{'cache': curcache, 'cache_lengths': curlen, 'next_token_preds': curntp} for curcache, curlen, curntp in zip(cached_kvs, cache_lengths, next_token_preds)]
+                _, indices, commit_loss = vq(x)
+                recon_loss, _ = recon_loss_fn(x) # loss for reconstruction of x components compared to fused and quantized x
+                #commit_loss = torch.tensor([0.], device=x.device)
+                commitment_loss +=  recon_loss.sum() + commit_loss.sum()
+                intermediate_targets.append(indices)
+                
+
+        #print(len(cached_kvs), len(layer_below_next_token_preds), len(cache_lengths), len(next_token_preds))
+        assert len(cached_kvs) == len(cache_lengths), 'something went wrong'
+  
+        cached_kvs = [{'cache': curcache, 'cache_lengths': curlen} for curcache, curlen in zip(cached_kvs, cache_lengths)]
+        cached_kvs = {'layers': cached_kvs, 'next_sentence_pred': next_token_preds}
 
         return {
             'logits': intermediate_logits,
+            'layer_below_predictions': [*layer_below_predictions, None],
             'targets': intermediate_targets,
             'cache': cached_kvs,
             'commitment_loss': commitment_loss,
-            'lengths': lengths
+            'lengths': torch.stack(lengths)
         }
-
 
 
 class transformer_lm(nn.Module):
@@ -473,22 +568,19 @@ class transformer_lm(nn.Module):
             **kwargs
         )
 
-        self.tie_embedding = kwargs.get('tie_embedding', False)
-        print('Tie embedding:', self.tie_embedding) if self.tie_embedding else None
- 
-        self.embedding = nn.Embedding(vocab_size, dim)
+        
 
     def count_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
-    #def calc_loss_main(self, logits, targets, next_token)
-
-    @staticmethod
-    def calc_all_losses(tlm_out, prev_cache):
+   
+    def calc_all_losses(self, tlm_out, prev_cache):
         eos_id = -100
         loss_fn = lambda l, t: F.cross_entropy(rearrange(l, 'b n c -> b c n'), t, ignore_index=-100, reduction='mean')
         losses = []
-        def calc_loss(logits, targets, first_token_pred, length):
+        lbelow_losses = []
+
+        def calc_token_loss(logits, targets, first_token_pred, length):
             if length.max() == 1 and not exists(first_token_pred):
                 return None # no loss for single token sequences if no previous prediction is available
             if exists(first_token_pred): # concat zero vect to end of targets
@@ -500,20 +592,39 @@ class transformer_lm(nn.Module):
             targets = add_eos(targets, eos_id=eos_id, token_lens=length)
             targets = mark_padding(targets=targets, mask=token_lens_to_mask(token_lens=length), pad_id=eos_id)
             loss = loss_fn(logits, targets)
+            
             return loss
 
+        def calc_layer_below_loss(logits, targets, length):
+            if length.max() <= 2:
+                return torch.tensor(0., device=logits.device)
+            targets[:,:-2] = targets.clone()[:,2:] # shift targets by two
+            targets = add_eos(targets, eos_id=eos_id, token_lens=length)
+            targets = mark_padding(targets=targets, mask=token_lens_to_mask(token_lens=length-2, max_len=length.max()), pad_id=eos_id)
+            loss = loss_fn(logits, targets)
+            if loss.isnan():
+                loss = torch.tensor(0., device=logits.device)
+            return loss
+
+        if exists(prev_cache):
+            assert len(tlm_out['logits']) == len(prev_cache['next_sentence_pred']), 'something went wrong'
         for lth in range(len(tlm_out['logits'])):
             logits = tlm_out['logits'][lth]
+            lbelow_logits = tlm_out['layer_below_predictions'][lth]
             targets = tlm_out['targets'][lth]
-            first_token_pred = prev_cache[lth]['next_token_preds'] if exists(prev_cache) else None
+            
+            #print(targets.reshape(-1).unique().shape)
+            first_token_pred = prev_cache['next_sentence_pred'][lth] if exists(prev_cache) else None
+            
             lengths = tlm_out['lengths'][lth]
-            loss = calc_loss(logits, targets, first_token_pred, lengths)
+            loss = calc_token_loss(logits, targets.clone(), first_token_pred, lengths.clone())
+            lbelow_loss = calc_layer_below_loss(lbelow_logits, targets.clone(), lengths.clone()) if exists(lbelow_logits) else torch.tensor(0., device=logits.device)
             if exists(loss): # incase of single token sequences
                 losses.append(loss)
+                lbelow_losses.append(lbelow_loss)
+                
+        tlm_out['token_losses'] = torch.stack(losses) + torch.stack(lbelow_losses)
 
-        token_loss = sum(losses) / len(losses)
-        tlm_out['token_loss'] = token_loss
-        tlm_out['total_loss'] = token_loss + tlm_out['commitment_loss']
         return tlm_out
 
 
@@ -524,17 +635,15 @@ class transformer_lm(nn.Module):
         cache: {cache_lengths: [B, N], cache: [L, KV, B, H, N, D]} KV: key and value (2)
         '''
         assert labels.shape[1] == length.max(), 'sequence length should be equal to the length of the longest sequence!'
-        x = self.embedding(labels)
+        x = self.layers.embedding(labels)
         x = self.abs_pos(x) 
         
-        outputs = self.layers(x, length, cache=cache, **kwargs)
+        outputs = self.layers(x, length, cache=cache['layers'] if exists(cache) else None, **kwargs)
         outputs['targets'][0] = labels.clone() # for the first layer we use ground truth tokens as targets
         if calc_loss:
             outputs = self.calc_all_losses(tlm_out=outputs, prev_cache=cache)
    
         return outputs
-
-
 
 class CharacterTokenizer(): # only for testing!
     def __init__(self):
