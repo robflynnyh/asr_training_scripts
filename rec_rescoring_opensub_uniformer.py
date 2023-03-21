@@ -252,7 +252,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
         total_sub_batch_loss = torch.zeros(model.layers.depth, device=device)
         total_sub_batch_codebook_util = torch.zeros(model.layers.depth, device=device)
         total_sub_batch_lengths = torch.zeros(model.layers.depth, device=device)
-        total_sub_batch_commit_loss = []
+        total_sub_batch_commit_loss = torch.zeros(model.layers.depth, device=device)
         with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
             for ix, sub_batch_ in enumerate(batch):
                 #print(f'sub_batch {ix+1} / {len(batch)}')
@@ -287,31 +287,25 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                     calc_loss=True,
                 )
 
-                targets_len = {f'codebook_util_layer_{lth}': outputs['targets'][lth].reshape(-1).unique().shape[0] / model.layers.vocab_fn(lth)
-                    for lth in range(len(outputs['targets']))}
-
                 token_len_thing = (outputs['lengths']).sum(-1)
                 token_len_thing[len(outputs['token_losses']):] = 0
                 total_sub_batch_lengths += token_len_thing
                 total_sub_batch_loss[:len(outputs['token_losses'])] += outputs['token_losses'] * token_len_thing[:len(outputs['token_losses'])]
-                total_sub_batch_commit_loss.append(outputs['commitment_loss'])
-    
-                codebook_util = torch.tensor(list(targets_len.values()), device=device)
-                total_sub_batch_codebook_util += codebook_util * token_len_thing[:len(outputs['token_losses'])]
+                total_sub_batch_commit_loss += outputs['commitment_loss'] * token_len_thing[:len(outputs['token_losses'])]
 
                 prev_states = outputs['cache']
 
 
         total_sub_batch_loss = (total_sub_batch_loss / total_sub_batch_lengths)
-        total_sub_batch_codebook_util = (total_sub_batch_codebook_util / total_sub_batch_lengths)
+        
 
         per_layer_loss = {f'loss_layer_{i}': total_sub_batch_loss[i].item() for i in range(len(total_sub_batch_loss))}
-        total_sub_batch_loss_todisplay = total_sub_batch_loss.mean().item()
+        total_sub_batch_loss = total_sub_batch_loss.mean()
+        total_sub_batch_loss_todisplay = total_sub_batch_loss.item()
     
-        total_sub_batch_loss = (total_sub_batch_loss * total_sub_batch_codebook_util**2).mean()
+        total_sub_batch_commit_loss = ((total_sub_batch_commit_loss / total_sub_batch_lengths)).sum() 
 
-
-        total_sub_batch_commit_loss = sum(total_sub_batch_commit_loss) / len(total_sub_batch_commit_loss)
+        #total_sub_batch_commit_loss = sum(total_sub_batch_commit_loss) / len(total_sub_batch_commit_loss)
         total_sub_batch_loss += total_sub_batch_commit_loss
         total_sub_batch_lengths = 0
         losses.append(total_sub_batch_loss_todisplay)
@@ -330,7 +324,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
         cur_lr = schedular.get_last_lr()[0] if exists(schedular) else optim.param_groups[0]['lr']
 
         if args.wandb:
-            wandb.log({'train_loss': total_sub_batch_loss_todisplay,'lrate': cur_lr,'epoch': epoch, **per_layer_loss, **targets_len, **{'commitment_loss': total_sub_batch_commit_loss.item()}})
+            wandb.log({'train_loss': total_sub_batch_loss_todisplay,'lrate': cur_lr,'epoch': epoch, **per_layer_loss, **{'commitment_loss': total_sub_batch_commit_loss.item()}})
             
     loss_end = sum(losses) / len(losses)
     if args.wandb:
