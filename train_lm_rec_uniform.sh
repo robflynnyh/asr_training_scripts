@@ -5,8 +5,8 @@ python rec_rescoring_uniformer.py --checkpoint '' \
     --dev_hyp 'dev_ted_lm.pkl' \
     --checkpoint_dir './checkpoints/unitformer_test/' \
     --config './experiment_configs/lm/uniformer_test.yaml' \
-    --min_lr 5e-5 \
-    --max_lr 5e-5 \
+    --min_lr 8e-5 \
+    --max_lr 8e-5 \
     --step_size 750 \
     --clip_gradients \
     --clip_gradients_value 5 \

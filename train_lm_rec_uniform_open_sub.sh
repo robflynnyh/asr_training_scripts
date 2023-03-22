@@ -1,10 +1,10 @@
 echo '<<< TRAINING AUTOREGRESSIVE TLM >>>'
 
-python rec_rescoring_opensub_uniformer.py --checkpoint '' \
+python rec_rescoring_opensub_uniformer.py --checkpoint './checkpoint_12_id_75.pt' \
     --checkpoint_dir './checkpoints/unitformer_test/' \
     --config './experiment_configs/lm/uniformer_test.yaml' \
-    --min_lr 5e-5 \
-    --max_lr 5e-5 \
+    --min_lr 4e-5 \
+    --max_lr 4e-5 \
     --step_size 1000 \
     --clip_gradients \
     --clip_gradients_value 5 \
@@ -12,8 +12,8 @@ python rec_rescoring_opensub_uniformer.py --checkpoint '' \
     --wandb_id '' \
     --save_top_k 60 \
     --schedular_data './unitformer.json' \
-    --utts 3 \
-    -batch 20  \
+    --utts 2 \
+    -batch 30  \
 
     
 

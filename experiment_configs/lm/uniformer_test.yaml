@@ -15,7 +15,7 @@ model:
     dim_head: 64
     dropout: 0.0
     kwargs:
-      inner_depth: 2
+      inner_depth: 4
       ff_mult: 3
       tie_embedding: false
       checkpoint_every_n: 1
