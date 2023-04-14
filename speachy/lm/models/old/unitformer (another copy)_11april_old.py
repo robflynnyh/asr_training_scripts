@@ -8,8 +8,9 @@ from functools import partial
 import string
 from math import ceil
 from einops import einsum as einsumops
-from vector_quantize_pytorch import RandomProjectionQuantizer, VectorQuantize
+from vector_quantize_pytorch.vector_quantize_pytorch_m import VectorQuantize
 from typing import Optional, Tuple, List, Dict, Union, Callable
+import torch_scatter
 
 def exists(val):
     return val is not None
@@ -216,6 +217,14 @@ class PreNorm(nn.Module):
     def forward(self, x, *args, **kwargs):
         return self.fn(self.norm(x), *args, **kwargs)
 
+class NoGrad(nn.Module):
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    @torch.no_grad()
+    def forward(self, *args, **kwargs):
+        return self.fn(*args, **kwargs)
 
 class GLU(nn.Module):
     def __init__(self, dim_in, dim_out, activation):
@@ -227,14 +236,11 @@ class GLU(nn.Module):
         x, gate = self.proj(x).chunk(2, dim = -1)
         return x * self.act(gate)
 
-def orthogonal_loss_fn_padded(t, mask):
+def orthogonal_loss_fn(t):
     # eq (2) from https://arxiv.org/abs/2112.00384
-    # fn: https://github.com/lucidrains/vector-quantize-pytorch/blob/master/vector_quantize_pytorch/vector_quantize_pytorch.py
     h, n = t.shape[:2]
     normed_codes = l2norm(t)
-    cosine_sim = einsum('hid, hjd -> hij', normed_codes, normed_codes)
-    cosine_sim = cosine_sim.masked_fill(~mask, 0) if mask is not None else cosine_sim
-    n = n if mask is None else (~mask).sum() #/ h
+    cosine_sim = einsum('h i d, h j d -> h i j', normed_codes, normed_codes)
     return (cosine_sim ** 2).sum() / (h * n ** 2) - (1 / n)
 
 
@@ -253,12 +259,12 @@ class Halfer(nn.Module): # uses conv instead of avg_pool1d
         super().__init__()
         self.conv = nn.Conv1d(dim, dim*exp_f*2, kernel_size=2, stride=2, padding=0, bias=True)
         self.act = nn.SiLU()
-        self.empty_vec = nn.Parameter(torch.zeros(1,1,dim))
+        self.empty_vec = torch.zeros(1,1,dim)
         self.ff = nn.Linear(dim*exp_f, dim)
 
     def forward(self, x, length):
         if x.shape[1] % 2 == 1:
-            x = torch.cat([x, self.empty_vec.expand(x.shape[0],1,-1)], dim=1)
+            x = torch.cat([x, self.empty_vec.to(x.device).expand(x.shape[0],1,-1)], dim=1)
             length += 1
         x = self.conv(x.transpose(1,2)).transpose(1,2)
         a, b = x.chunk(2, dim=-1)
@@ -358,10 +364,37 @@ class AttentionFFstack(nn.Module):
     def forward(self, x, pos_bias, attn_mask, cache=None, cache_indices=None):
         cached_kvs = []
         for i, layer in enumerate(self.layers):
-            x, kv = layer(x, pos_bias, attn_mask, cache[i], cache_indices)
+            x, kv = layer(x, pos_bias, attn_mask, cache[i] if cache is not None else None, cache_indices)
             cached_kvs.append(kv[None])
         return x, cached_kvs
 
+def map_to_sequence(int_list):
+    unique_ints = torch.unique(int_list)
+    max_int = unique_ints.max()
+    seq = torch.zeros(max_int + 1, dtype=torch.int64)
+    seq[unique_ints] = torch.arange(len(unique_ints))
+    return seq[int_list]
+
+
+class EinopsFn(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self, x, y, pattern):
+        return einsumops(x, y, pattern)
+
+def stable_weighted_softmax(logits, weights):
+    ## logits: B, H, N, V # weights: 1 H 1 V ##
+    stable_logits = logits - logits.max(dim=-1, keepdim=True)[0] # subtract max to make logits more stable
+    weights = weights.clamp(min=torch.finfo(weights.dtype).eps)
+    numerators = torch.exp(stable_logits) * weights
+    denominators = numerators.sum(dim=-1, keepdim=True) 
+    return numerators / (denominators + torch.finfo(denominators.dtype).eps)
+    
+class StableWeightedSoftmax(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self, logits, weights):
+        return stable_weighted_softmax(logits, weights)
 
 class transformer(nn.Module):
     def __init__(
@@ -383,7 +416,7 @@ class transformer(nn.Module):
         self.base_vocab = base_vocab_size
         self.max_vocab = kwargs.get('max_vocab', 10000)
         commitment_weight = kwargs.get('commitment_weight', 1.0)
-        self.inner_depth = kwargs.get('inner_depth', 4)
+        self.inner_depth = kwargs.get('inner_depth', 2)
 
         self.embedding = nn.Embedding(base_vocab_size, dim)
 
@@ -400,22 +433,24 @@ class transformer(nn.Module):
 
         self.halfer = PreNorm(dim=dim, fn=Halfer(dim, exp_f=4))
 
-        codebook_dim = 16
-        codebook_heads = 16
-        codebook_size = 64
-        self.vq = PreNorm(dim,
-            VectorQuantize(
-                dim = dim,
-                codebook_dim = codebook_dim,
-                codebook_size = self.base_vocab,
-                commitment_weight=0.0,
-                kmeans_init = True,
-                separate_codebook_per_head = True,
-                heads = codebook_heads,
-                decay=0.1,
-                threshold_ema_dead_code=0.25,
-            )
-        )
+        self.codebook_dim = 32
+        self.codebook_heads = 16
+        self.codebook_vocab = 128
+        self.vq = PreNorm(dim, VectorQuantize(
+            dim = dim,
+            codebook_dim = self.codebook_dim,
+            codebook_size = self.codebook_vocab,
+            commitment_weight=1.0,
+            orthogonal_reg_weight = 10.0,
+            separate_codebook_per_head = True,
+            heads = self.codebook_heads,
+            kmeans_init = True,
+            use_cosine_sim = False,
+            decay = 0.95,
+            threshold_ema_dead_code= 2.0,
+        ))
+
+        
 
 
         self.attn_ff = AttentionFFstack(
@@ -428,7 +463,13 @@ class transformer(nn.Module):
             **kwargs
         )
 
+        self.einopsfn = EinopsFn()
+        self.stablesmax = StableWeightedSoftmax()
+
+
         self.vocab_prediction_layer = PredictionLayer(dim, dim)
+        self.prediction_layer = PredictionLayer(dim, dim)
+        self.pred_scaler = nn.Parameter(torch.tensor(1.0))
  
 
     @staticmethod
@@ -498,6 +539,8 @@ class transformer(nn.Module):
         return q_mask, attn_mask, total_len, x_len, cache_len, pos_bias
 
 
+
+
     def forward(self, x, length, cache=None, **kwargs):
         
         intermediate_logits = []
@@ -510,9 +553,16 @@ class transformer(nn.Module):
         cached_kvs = []
         x_outs = []
 
+        pred_matrix = None
+        pred_mask = None
+        prev_scout = None
+        culm_cluster_size = torch.zeros(self.codebook_heads * self.codebook_vocab, device=x.device)
+        culm_emb_sum = torch.zeros(self.codebook_heads *self.codebook_vocab, self.codebook_dim, device=x.device)
+    
         curcache = cache[0] if exists(cache) else None
         mask, attn_mask, total_lens, x_len, cache_len, pos_bias = self.create_masks_and_positions(x, length, curcache)
         cache_indices = self.get_cache_indices(x_len, cache_len, curcache['cache'], x) if exists(curcache) else None
+
 
         for i in range(self.depth):
           
@@ -525,39 +575,40 @@ class transformer(nn.Module):
             ## attention ff blocks ##
             
             if i!= 0:
-                z = self.vq.norm(x)
-                z = l2norm(self.vq.fn.project_in(z))
-                predtable, pattern = l2norm(self.vq.fn.codebook.detach()), 'b h n d, h v d -> b h n v'
+                z = x
+                predtable, pattern = pred_matrix, 'b h n d, h v d -> b h n v'
+                z = self.checkpoint(i, self.prediction_layer, x)
                 z = rearrange(z, 'b n (h d) -> b h n d', d = predtable.shape[-1])
+                scaler = self.pred_scaler
             else:
                 predtable, pattern = self.embedding.weight, 'b n d, v d -> b n v'
                 z = self.checkpoint(i, self.vocab_prediction_layer, x)
+                scaler = 1.0
                 
-            zsim, clen = einsumops(z, predtable, pattern), length.clone()
-    
+            zsim, clen = self.checkpoint(i, self.einopsfn, z, predtable, pattern) * scaler, length.clone()
+            
             if i!= 0:
-                B,H,N,V = zsim.shape # diversity Loss  
-                zmax = zsim.softmax(-1)    
-                zmax = zmax.masked_fill(mask[:, None, :, None], 0)
-                zmax = (zmax / (clen[:,None,None,None])).sum(-2).mean(0)
-                tomax = zmax * zmax.log()
-                tomax = tomax.sum() / (H*V)
-                commitment_loss[-1] += tomax # diversity Loss  
-
                 clen = repeat(clen, 'b -> (b h)', h=z.shape[1])
                 zsim = rearrange(zsim, 'b h n v -> (b h) n v') 
 
             ntp = grab_last_token(zsim, clen)   
             if i!= 0:
-                ntp = rearrange(ntp, '(b h) n v -> b h n v', h=z.shape[1])
-                zsim = rearrange(zsim, '(b h) n v -> b h n v', h=z.shape[1])
+                ntp = rearrange(ntp, '(b h) n v -> b h n v', h=z.shape[1]).clone()
+                zsim = rearrange(zsim, '(b h) n v -> b h n v', h=z.shape[1]).clone()
+                cat = torch.cat([zsim, ntp], dim=-2)
+                catmax = self.checkpoint(i, self.stablesmax, cat, rearrange(cluster_size.clone(), '(h v) -> 1 h 1 v', h=self.codebook_heads)).log()
+                ntp, zsim = catmax[:,:,-1:], catmax[:,:,:-1]
+            
+            else:
+                ntp, zsim = ntp.log_softmax(dim=-1), zsim.log_softmax(dim=-1)
             intermediate_logits.append(zsim)
             next_token_preds.append(ntp)
 
 
-            x_outs.append(x)
+            
             if i != self.depth-1:
                 x, length = self.checkpoint(i, self.halfer, x, length)
+                x_outs.append(x)
                 lengths.append(length.clone())
                 
                 curcache = cache[(i+1)*self.inner_depth] if exists(cache) else None
@@ -566,11 +617,47 @@ class transformer(nn.Module):
             
                 cache_indices = self.get_cache_indices(x_len, cache_len, curcache['cache'], x) if exists(curcache) else None
 
-                _, indices, commit_loss = self.vq(x)
+                B, N, D = x.shape
+
+                vqx, indices, commit_loss, cluster_size = self.vq(x, mask = ~mask)
+                cluster_size = rearrange(cluster_size, 'h v -> (h v)')
+                culm_cluster_size += cluster_size
                 
-                commitment_loss.append(commit_loss.sum())
+                vqx = rearrange(vqx, 'b n (h d) -> (b n h) d', h=self.codebook_heads)
+                s_indices = indices + (torch.arange(self.codebook_heads, device=indices.device) * self.codebook_vocab)[None,None,:]
+                s_indices = rearrange(s_indices, 'b n h -> (b n h)', h=self.codebook_heads, b=B) 
+
+                codebook = rearrange(self.vq.fn.codebook, 'h n d -> n (h d)')
+                codebook = rearrange(self.vq.fn.project_out(codebook), 'n (h d) -> (n h) d', h=self.codebook_heads)
+                fullidx = torch.arange(codebook.shape[0], device=codebook.device) # find all indices in fullidx that are not in indices        
+                
+                src,idx = vqx, s_indices
+                '''emptycode = fullidx[~torch.isin(fullidx, idx)]
+                if len(emptycode) > 0:
+                    codebook_unused = codebook[emptycode]
+                    # select up to 10 unused codebooks indices (random)
+                    randomperm = torch.randperm(emptycode.shape[0])
+                    emptycode = emptycode[randomperm[:10]]
+                    codebook_unused = codebook_unused[randomperm[:10]]
+                    src = torch.cat([src, codebook_unused], dim=0)
+                    idx = torch.cat([idx, emptycode], dim=0)'''
+                    
+                
+                scout = torch_scatter.scatter(src=src, index=idx, dim=0, reduce='sum', out=torch.zeros_like(culm_emb_sum))
+                culm_emb_sum += scout
+                
+                clamped_cluster_size = cluster_size.clone().clamp(1.0) # avoid divide by zero
+                pred_matrix = scout / clamped_cluster_size[:,None]
+                pred_matrix = rearrange(pred_matrix, '(h v) d -> h v d', h=self.codebook_heads)
+
+                #orth_loss = orthogonal_loss_fn(pred_matrix)
+
+                commitment_loss.append(commit_loss.sum())# + orth_loss.sum() * 10.0)
                 intermediate_targets.append(indices)
-                
+
+        #orth_loss = orthogonal_loss_fn(pred_matrix)
+        #commitment_loss =  orth_loss.sum() * 10.0 
+        commitment_loss = sum(commitment_loss) / len(commitment_loss)
 
         #print(len(cached_kvs), len(layer_below_next_token_preds), len(cache_lengths), len(next_token_preds))
         assert len(cached_kvs) == len(cache_lengths), 'something went wrong'
@@ -578,11 +665,17 @@ class transformer(nn.Module):
         cached_kvs = [{'cache': curcache, 'cache_lengths': curlen} for curcache, curlen in zip(cached_kvs, cache_lengths)]
         cached_kvs = {'layers': cached_kvs, 'next_sentence_pred': next_token_preds}
 
+        
+        self.vq.fn._codebook.update_codebook(
+            cluster_size=rearrange(culm_cluster_size, '(h v) -> h v', h=self.codebook_heads),
+            embed_sum=rearrange(culm_emb_sum, '(h v) d -> h v d', h=self.codebook_heads)
+        )
+
         return {
             'logits': intermediate_logits,
             'targets': intermediate_targets,
             'cache': cached_kvs,
-            'commitment_loss': torch.stack([*commitment_loss,torch.tensor(0.,device=commitment_loss[0].device)]),
+            'commitment_loss': commitment_loss,
             'lengths': torch.stack(lengths),
             'x_outs': x_outs
         }
@@ -627,7 +720,7 @@ class transformer_lm(nn.Module):
    
     def calc_all_losses(self, tlm_out, prev_cache):
         eos_id = -100
-        loss_fn = lambda l, t: F.cross_entropy(rearrange(l, 'b n c -> b c n'), t, ignore_index=-100, reduction='mean')
+        loss_fn = lambda l, t: F.nll_loss(rearrange(l, 'b n c -> b c n'), t, ignore_index=-100, reduction='mean')
         losses = []
 
         def calc_token_loss(logits, targets, first_token_pred, length):
@@ -642,17 +735,24 @@ class transformer_lm(nn.Module):
                 first_token_pred = None if not exists(first_token_pred) else rearrange(first_token_pred, 'b h n v -> (b h) n v')
 
             if exists(first_token_pred): # concat zero vect to end of targets
-                targets = torch.cat([targets, torch.zeros(targets.size(0), 1, dtype=targets.dtype, device=targets.device)], dim=1)
+                targets = rearrange(targets, '(b h) n -> b h n', h=heads)
+                targets = torch.cat([targets, torch.zeros(targets.size(0), heads, 1, device=targets.device).long()], dim=2)
+                targets = rearrange(targets, 'b h n -> (b h) n')
                 logits = torch.cat([first_token_pred, logits], dim=1)
                 length += 1
             else:
-                targets[:,:-1] = targets.clone()[:,1:]
+                if heads == 1:
+                    targets[:,:-1] = targets.clone()[:,1:]
+                else:
+                    targets = rearrange(targets, '(b h) n -> b h n', h=heads)
+                    targets[:,:,:-1] = targets.clone()[:,:,1:]
+                    targets = rearrange(targets, 'b h n -> (b h) n')
             
             targets = add_eos(targets, eos_id=eos_id, token_lens=length)
             mask =  token_lens_to_mask(token_lens=length)
             
             targets = mark_padding(targets=targets, mask=mask, pad_id=eos_id)
-            loss = loss_fn(logits, targets) 
+            loss = loss_fn(logits, targets) #* heads # multiply by heads 
             
             return loss
 
@@ -692,68 +792,4 @@ class transformer_lm(nn.Module):
             outputs = self.calc_all_losses(tlm_out=outputs, prev_cache=cache)
    
         return outputs
-
-                
-
-class CharacterTokenizer(): # only for testing!
-    def __init__(self):
-        self.vocab = ['#', '/'] + list(string.ascii_lowercase) + [' '] # bos/eos -> /, pad -> #
-        self.vocab_size = len(self.vocab)
-        self.token_to_id = {token: i for i, token in enumerate(self.vocab)}
-        self.id_to_token = {i: token for i, token in enumerate(self.vocab)}
-    
-    def __call__(self, text):
-        return self.tokenize(text)
-
-    def tokenize(self, text):
-        return [self.token_to_id[token] for token in text]
-
-def collate_fn(tensors:List[torch.Tensor], pad_token:int): # only for testing!
-    max_len = max([t.shape[0] for t in tensors])
-    lengths = torch.tensor([t.shape[0] for t in tensors])
-    padded_tensors = [torch.cat([t, torch.full((max_len - t.shape[0],), pad_token, dtype=t.dtype)], dim=0) for t in tensors]
-    return torch.stack(padded_tensors, dim=0), lengths
-
-
-@torch.no_grad()
-def caching_test():
-    tokenizer = CharacterTokenizer()
-    model = transformer_lm(
-        dim = 256,
-        vocab_size = tokenizer.vocab_size,
-        depth = 10,
-        heads = 1,
-        dim_head = 32,
-        dropout=0.0,
-        causal = True,
-        shared_kv = True,
-    )
-    model.eval()
-    # test batches to test caching
-    s1_b1, s2_b1, s3_b1 = torch.tensor(tokenizer('/hi')), torch.tensor(tokenizer('/buenos')), torch.tensor(tokenizer('/whats'))
-    s1_b2, s2_b2, s3_b2 = torch.tensor(tokenizer(' there')), torch.tensor(tokenizer(' dias')), torch.tensor(tokenizer(' up'))
-    s1_b3, s2_b3, s3_b3 = torch.tensor(tokenizer(' how')), torch.tensor(tokenizer(' captain')), torch.tensor(tokenizer(' donkey'))
-    s1_b4, s2_b4, s3_b4 = torch.tensor(tokenizer(' u/')), torch.tensor(tokenizer(' hook/')), torch.tensor(tokenizer(' man/'))
-    b1, b1_lengths = collate_fn([s1_b1, s2_b1, s3_b1], pad_token=tokenizer.token_to_id['#'])
-    b2, b2_lengths = collate_fn([s1_b2, s2_b2, s3_b2], pad_token=tokenizer.token_to_id['#'])
-    b3, b3_lengths = collate_fn([s1_b3, s2_b3, s3_b3], pad_token=tokenizer.token_to_id['#'])
-    b4, b4_lengths = collate_fn([s1_b4, s2_b4, s3_b4], pad_token=tokenizer.token_to_id['#'])
-    # comparsion set final states of above should be the same as these
-    f_1, f_2, f_3 = torch.tensor(tokenizer('/hi there how u/')), torch.tensor(tokenizer('/buenos dias captain hook/')), torch.tensor(tokenizer('/whats up donkey man/'))
-    fb, fb_lengths = collate_fn([f_1, f_2, f_3], pad_token=tokenizer.token_to_id['#'])
-
-    logits_s1, interim_logits, cached_kvs = model(b1, length=b1_lengths)
-    logits_s2, interim_logits, cached_kvs_s2 = model(b2, length=b2_lengths, cache=cached_kvs)
-    logits_s3, interim_logits, cached_kvs_s3 = model(b3, length=b3_lengths, cache=cached_kvs_s2)
-    logits_s4, interim_logits, cached_kvs_s4 = model(b4, length=b4_lengths, cache=cached_kvs_s3)
-    logits_fs, interim_logits, cached_kvs_fs = model(fb, length=fb_lengths)
-
-    print('shapes: ', cached_kvs_fs['cache'].shape, cached_kvs_s4['cache'].shape)
-    c_lens = cached_kvs_fs['cache_lengths']
-    mask = torch.arange(c_lens.max())[:,None] < c_lens[None,:]
-    mask = ~mask.T
-    mask = rearrange(mask, 'b i -> () () b () i ()')
-    fs_cache =  cached_kvs_fs['cache'].masked_fill(mask, 0)
-
-    assert torch.allclose(fs_cache, cached_kvs_s4['cache'], atol=0.001), 'failed check ): ): ):'
-    print('things are looking up !')
+        

@@ -7,14 +7,14 @@ python rec_rescoring_uniformer.py --checkpoint '' \
     --config './experiment_configs/lm/uniformer_test.yaml' \
     --min_lr 8e-5 \
     --max_lr 8e-5 \
-    --step_size 750 \
+    --step_size 3500 \
     --clip_gradients \
-    --clip_gradients_value 5 \
+    --clip_gradients_value 1.0 \
     --max_allowed_utterance_gap 10.0 \
     --wandb_id '' \
     --save_top_k 60 \
     --schedular_data './unitformer.json' \
-    --utts 4 \
+    --utts 2 \
     -batch 40  \
     --optimizer_type 'ranger' \
 

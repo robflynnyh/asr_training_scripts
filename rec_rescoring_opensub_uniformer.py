@@ -130,10 +130,10 @@ class Sampler(object):
         self.sample_indices = np.arange(len(self.samples))
         np.random.shuffle(self.sample_indices) if self.shuffle else None
         self.cur_split = 0
-        self.split_into_splits = split_into_splits
+        self.split_into_splits = split_into_splits 
         self.samples_indice_splits = np.array_split(self.sample_indices, self.split_into_splits)
         
-
+        
         self.generator = self.__generator__() 
 
     def __generator__(self): 
@@ -218,7 +218,9 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
 
             prev_states = outputs['cache']
 
-        losses.append((total_sub_batch_loss / total_sub_batch_lengths).mean().item())
+        l = (total_sub_batch_loss / total_sub_batch_lengths)
+        l = l.mean()
+        losses.append(l.item())
 
         if sanity_check:
             return True
@@ -250,9 +252,10 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
     for batch in pbar:
         prev_states = None
         total_sub_batch_loss = torch.zeros(model.layers.depth, device=device)
-        total_sub_batch_codebook_util = torch.zeros(model.layers.depth, device=device)
         total_sub_batch_lengths = torch.zeros(model.layers.depth, device=device)
-        total_sub_batch_commit_loss = torch.zeros(model.layers.depth, device=device)
+        total_ntmseloss = torch.zeros(model.layers.depth, device=device)
+        total_sub_batch_commit_loss = []
+
         with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
             for ix, sub_batch_ in enumerate(batch):
                 #print(f'sub_batch {ix+1} / {len(batch)}')
@@ -291,22 +294,31 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 token_len_thing[len(outputs['token_losses']):] = 0
                 total_sub_batch_lengths += token_len_thing
                 total_sub_batch_loss[:len(outputs['token_losses'])] += outputs['token_losses'] * token_len_thing[:len(outputs['token_losses'])]
-                total_sub_batch_commit_loss += outputs['commitment_loss'] * token_len_thing[:len(outputs['token_losses'])]
-
+                total_ntmseloss[:len(outputs['ntmselosses'])] += outputs['ntmselosses'] * token_len_thing[:len(outputs['ntmselosses'])]
+                #total_codebook_usage += outputs['codebook_usage'] * token_len_thing[:len(outputs['token_losses'])][1:]
+                total_sub_batch_commit_loss.append(outputs['commitment_loss'].sum() * token_len_thing.sum())
                 prev_states = outputs['cache']
 
 
+
         total_sub_batch_loss = (total_sub_batch_loss / total_sub_batch_lengths)
+        total_sub_batch_commit_loss = sum(total_sub_batch_commit_loss) / total_sub_batch_lengths.sum()
+        
+        total_ntmseloss = (total_ntmseloss / total_sub_batch_lengths)
+      
+        #total_codebook_usage = (total_codebook_usage / total_sub_batch_lengths[1:])
+        #per_layer_codebook_usage = {f'codebook_usage_layer_{i+1}': total_codebook_usage[i].item() for i in range(len(total_codebook_usage))}
+        
+        per_layer_loss = {f'loss_layer_{i}': total_sub_batch_loss[i].item() for i in range(len(total_sub_batch_loss))}
+        per_layer_loss_ntmse = {f'loss_ntmse_layer_{i}': total_ntmseloss[i].item() for i in range(len(total_ntmseloss))}
         
 
-        per_layer_loss = {f'loss_layer_{i}': total_sub_batch_loss[i].item() for i in range(len(total_sub_batch_loss))}
         total_sub_batch_loss = total_sub_batch_loss.mean()
         total_sub_batch_loss_todisplay = total_sub_batch_loss.item()
+        total_sub_batch_loss = total_sub_batch_loss + total_ntmseloss.mean() + total_sub_batch_commit_loss
     
-        total_sub_batch_commit_loss = ((total_sub_batch_commit_loss / total_sub_batch_lengths)).sum() 
-
         #total_sub_batch_commit_loss = sum(total_sub_batch_commit_loss) / len(total_sub_batch_commit_loss)
-        total_sub_batch_loss += total_sub_batch_commit_loss
+    
         total_sub_batch_lengths = 0
         losses.append(total_sub_batch_loss_todisplay)
         scaler.scale(total_sub_batch_loss).backward() if exists(scaler) else total_sub_batch_loss.backward()
@@ -324,7 +336,13 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
         cur_lr = schedular.get_last_lr()[0] if exists(schedular) else optim.param_groups[0]['lr']
 
         if args.wandb:
-            wandb.log({'train_loss': total_sub_batch_loss_todisplay,'lrate': cur_lr,'epoch': epoch, **per_layer_loss, **{'commitment_loss': total_sub_batch_commit_loss.item()}})
+            wandb.log({
+                'train_loss': total_sub_batch_loss_todisplay,
+                'lrate': cur_lr,
+                'epoch': epoch, 
+                **per_layer_loss,
+                **per_layer_loss_ntmse,
+            })
             
     loss_end = sum(losses) / len(losses)
     if args.wandb:
@@ -335,7 +353,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
 
 
 def load_csv(path): 
-    return pd.read_csv(path, low_memory=False)
+    return pd.read_csv(path, low_memory=False, nrows=10000000)
 
 def main(args):
 

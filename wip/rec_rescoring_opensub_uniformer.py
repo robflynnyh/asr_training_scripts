@@ -6,7 +6,7 @@ import numpy as np
 from functools import reduce
 import torch
 import os
-import traceback
+
 from speachy.utils.misc import ( add_common_args, get_parameters, load_pkl )
 
 from speachy.utils.general import (
@@ -37,13 +37,12 @@ from tqdm import tqdm
 import wandb
 from torch.cuda.amp import GradScaler   
 from torch_ema import ExponentialMovingAverage
+import json
+from typing import List, Dict, Tuple, Union, Optional
+import pandas as pd
 
 INTERPOLATE = 0.5
 
-def get_edit_distance(hyps, target): # THIS ISN'T RIGHT
-    return list(map(lambda x: distance(x, target) / (len(target)+1), hyps))
-
-flatten_nested_list = lambda l: [item for sublist in l for item in sublist]
     
 def tokenize_and_pad(utterances, tokenizer): # returns padded utterances and their lengths
     tokenized = [tokenizer.text_to_ids(utt) for utt in utterances]
@@ -52,22 +51,20 @@ def tokenize_and_pad(utterances, tokenizer): # returns padded utterances and the
     return padded_utts, np.array(list(map(len, tokenized)))
 
 def get_sub_batches(batch, tokenizer):  
-    proc_utts = lambda utts: tokenize_and_pad(flatten_nested_list(utts), tokenizer)
+    proc_utts = lambda utts: tokenize_and_pad(utts, tokenizer)
     sub_batches = []
     max_len = max(map(len, batch))
     for i in range(max_len):
-        sub_batches.append({'utterances': [],'scores': [],'sb_lengths': [], 'durations': []})
+        sub_batches.append({'utterances': [],'sb_lengths': []})
         for el in batch:
             case = len(el) > i
             sub_batches[-1]['utterances'].append(el[i][0] if case else -1)
-            sub_batches[-1]['scores'].append(el[i][1] if case else -1)
-            sub_batches[-1]['sb_lengths'].append(len(el[i][0]) if case else -1)
-            sub_batches[-1]['durations'].append(el[i][2] if case else -1)
+            sub_batches[-1]['sb_lengths'].append(len(el[i]) if case else -1)
      
     non_empty_indices = np.arange(len(sub_batches[0]['sb_lengths']))
 
     for i, sub_batch in enumerate(sub_batches):
-        sb_utts, sb_scores, sb_lengths, sb_durations = [np.array(el, dtype=object) for el in (sub_batch['utterances'], sub_batch['scores'], sub_batch['sb_lengths'], sub_batch['durations'])]
+        sb_utts, sb_lengths = [np.array(el, dtype=object) for el in (sub_batch['utterances'], sub_batch['sb_lengths'])]
         non_empty = non_empty_indices[sb_lengths != -1]
         # slice based on non empty of previous sub batch
         prev_fetch = None
@@ -79,9 +76,7 @@ def get_sub_batches(batch, tokenizer):
             
         sub_batches[i] = {
             'utterances': sb_utts,
-            'scores': sb_scores,
             'sb_lengths': sb_lengths,
-            'durations': sb_durations,
             'non_empty': non_empty,
             'prev_fetch': prev_fetch 
         }
@@ -91,8 +86,6 @@ def get_sub_batches(batch, tokenizer):
         sub_batches[i] = {
             'utterances': torch.as_tensor(padded_utts),
             'lengths': torch.as_tensor(acc_lengths),
-            'scores': torch.tensor(flatten_nested_list((sub_batch['scores'][sub_batch['non_empty']]).tolist())),
-            'durations': torch.tensor(sub_batch['durations'][sub_batch['non_empty']].astype(float)).to(torch.float32),
             'sb_lengths': torch.as_tensor(sub_batch['sb_lengths'][sub_batch['non_empty']].astype(int)),
             'prev_fetch': torch.as_tensor(sub_batch['prev_fetch']) if sub_batch['prev_fetch'].__class__.__name__ != 'NoneType' else None# indices to fetch the states from previous sub batch
         }
@@ -100,56 +93,52 @@ def get_sub_batches(batch, tokenizer):
 
 
     
-def create_samples_from_recording(recording, num_utterances, num_negatives, max_gap=10.0, shuffle=True):
-    samples = []
-    prev_end = None
-    if shuffle == False:
-        np.random.seed(42) # deterministic selection of negatives
-    for i, utterance in enumerate(recording):
-        start_t, end_t = utterance['meta_data']['timings'].values()
-        duration = end_t - start_t
-        if prev_end is None or (start_t - prev_end) > max_gap:
-            samples.append([]) 
+def create_samples_from_recording(recording:List[str], num_utterances):
+    samples = [[]]
+    for i, sentence in enumerate(recording):
+        if type(sentence) != str:
+            return False
         if len(samples[-1]) >= num_utterances:
             samples.append([])
-        hyps = utterance['beams'][0]
-        hyps = list(map(lambda x: x['text'], list(hyps.values())))
-        target = utterance['targets'][0]
-        if target == '':
-            continue
-        hyps = list(filter(lambda el:el != target, hyps))
-        hyps = np.random.choice(hyps, min(num_negatives, len(hyps)), replace=False).tolist()
-        examples = [target] + hyps
         
-        error_rates = get_edit_distance(examples, target)
-        samples[-1].append((examples, error_rates, duration))
-        prev_end = end_t
-
+        samples[-1].append(([sentence]))
     return samples
 
-def create_dataset_samples(recordings, num_utterances, num_negatives, max_gap=10.0, shuffle=True):
+
+
+def create_dataset_samples(recordings, num_utterances, shuffle=True):
     samples = []
-    for recording in recordings.keys():
-        samples += create_samples_from_recording(recordings[recording], num_utterances, num_negatives, max_gap, shuffle)
+    episodes =  recordings['parent_id'].unique().tolist()
+    episode_text = {ep: [] for ep in episodes}
+    for entry in tqdm(recordings.itertuples(), desc='Collecting text'):
+        episode_text[entry.parent_id].append(entry.text)
+    for episode in tqdm(episodes, desc='Creating samples'):
+        rec = create_samples_from_recording(episode_text[episode], num_utterances)
+        if rec is not False:
+            samples += rec
     if shuffle:
-        np.random.shuffle(samples) # shuffle samples
+        np.random.shuffle(samples)
     return samples
 
 
 class Sampler(object):
-    def __init__(self, samples, batch_size, tokenizer, shuffle=True):
+    def __init__(self, samples, batch_size, tokenizer, shuffle=True, split_into_splits=30):
         self.samples = samples
         self.batch_size = batch_size
         self.tokenizer = tokenizer
         self.shuffle = shuffle
         self.sample_indices = np.arange(len(self.samples))
         np.random.shuffle(self.sample_indices) if self.shuffle else None
-
+        self.cur_split = 0
+        self.split_into_splits = split_into_splits 
+        self.samples_indice_splits = np.array_split(self.sample_indices, self.split_into_splits)
+        
+        
         self.generator = self.__generator__() 
 
     def __generator__(self): 
-        for i in range(0, len(self.samples), self.batch_size):
-            yield get_sub_batches([self.samples[i] for i in self.sample_indices[i:i+self.batch_size]], self.tokenizer)
+        for i in range(0, len(self.samples_indice_splits[self.cur_split]), self.batch_size):
+            yield get_sub_batches([self.samples[i] for i in self.samples_indice_splits[self.cur_split][i:i+self.batch_size]], self.tokenizer)
 
     def __list__(self):
         return list(self.generator)
@@ -158,10 +147,18 @@ class Sampler(object):
         return self
 
     def __len__(self):
-        return len(self.samples) // self.batch_size
+        return len(self.samples_indice_splits[self.cur_split]) // self.batch_size
 
     def __next__(self):
         return next(self.generator)
+
+    def step(self):
+        self.cur_split += 1
+        self.generator = self.__generator__()
+        if self.cur_split >= self.split_into_splits:
+            print(f'FINISHED FULL EPOCH WOOOO')
+            return True
+
       
 '''
     sb_idxs = torch.arange(sb_lengths.size(0))
@@ -174,7 +171,7 @@ class Sampler(object):
 @torch.no_grad()
 def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
     model.eval()
-    val_dataloader = list(val_dataloader)
+    #val_dataloader = list(val_dataloader)
     pbar = tqdm(val_dataloader, total=len(val_dataloader))
     losses = []
     print('Evaluation epoch')
@@ -200,9 +197,8 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
                     prev_states['layers'][i]['cache_lengths'] = prev_states['layers'][i]['cache_lengths'][prev_fetch]
                 for i in range(len(prev_states['next_sentence_pred'])):
                     prev_states['next_sentence_pred'][i] = prev_states['next_sentence_pred'][i][prev_fetch]
-                    
-    
-            
+
+        
             using_bos = not exists(prev_states) or args.bos_eos
             token_lens += 1 if using_bos else 0 # add 1 for bos if using
             tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
@@ -222,8 +218,10 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
 
             prev_states = outputs['cache']
 
-        losses.append((total_sub_batch_loss / total_sub_batch_lengths).mean().item())
-  
+        l = (total_sub_batch_loss / total_sub_batch_lengths)
+        l = l.mean()
+        losses.append(l.item())
+
         if sanity_check:
             return True
 
@@ -242,39 +240,21 @@ def intermediate_loss(loss_fn, interim_logits, targets):
     return torch.mean(interims)
 
 
-import random
-
-def get_depth(p_stop):
-    depth = 1
-    while torch.rand(1).item() < p_stop:
-        depth += 1
-    return depth
 
 def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None):
     model.train()
-    train_dataloader = list(train_dataloader)
+    #train_dataloader = list(train_dataloader)
     pbar = tqdm(train_dataloader, total=len(train_dataloader))
     losses = []
     loss_iterim = []
     autocast_device = 'cuda' if torch.cuda.is_available() else 'cpu' # for autocast if using mixed precision
-    print('Training epoch') 
-    
-    normal_depth = 5
-    model.layers.depth = normal_depth
-    p_stop = 0.5
-
-    prev_loss = torch.zeros(10, device=device)
+    print('Training epoch')
     for batch in pbar:
-        model.layers.depth = get_depth(p_stop)
-        print(f'current depth: {model.layers.depth}')
         prev_states = None
         total_sub_batch_loss = torch.zeros(model.layers.depth, device=device)
+        total_sub_batch_codebook_util = torch.zeros(model.layers.depth, device=device)
         total_sub_batch_lengths = torch.zeros(model.layers.depth, device=device)
-        total_ntmseloss = torch.zeros(model.layers.depth, device=device)
-        total_sub_batch_commit_loss = []
-
-
-
+        total_sub_batch_commit_loss = torch.zeros(model.layers.depth, device=device)
         with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
             for ix, sub_batch_ in enumerate(batch):
                 #print(f'sub_batch {ix+1} / {len(batch)}')
@@ -293,13 +273,14 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                     for i in range(len(prev_states['layers'])):
                         prev_states['layers'][i]['cache'] = prev_states['layers'][i]['cache'][:, :, prev_fetch] 
                         prev_states['layers'][i]['cache_lengths'] = prev_states['layers'][i]['cache_lengths'][prev_fetch]
+                        
                     for i in range(len(prev_states['next_sentence_pred'])):
                         prev_states['next_sentence_pred'][i] = prev_states['next_sentence_pred'][i][prev_fetch]
-                       
+    
+
                 using_bos = not exists(prev_states) or args.bos_eos
                 token_lens += 1 if using_bos else 0 # add 1 for bos if using
                 tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
-
 
                 outputs = model(
                     labels=tokens,
@@ -308,41 +289,31 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                     calc_loss=True,
                 )
 
-
                 token_len_thing = (outputs['lengths']).sum(-1)
                 token_len_thing[len(outputs['token_losses']):] = 0
                 total_sub_batch_lengths += token_len_thing
                 total_sub_batch_loss[:len(outputs['token_losses'])] += outputs['token_losses'] * token_len_thing[:len(outputs['token_losses'])]
-                total_ntmseloss[:len(outputs['ntmselosses'])] += outputs['ntmselosses'] * token_len_thing[:len(outputs['ntmselosses'])]
-                #total_codebook_usage += outputs['codebook_usage'] * token_len_thing[:len(outputs['token_losses'])][1:]
-                total_sub_batch_commit_loss.append(outputs['commitment_loss'].sum() * token_len_thing.sum())
+                #total_sub_batch_commit_loss += outputs['commitment_loss'] * token_len_thing[:len(outputs['token_losses'])]
+
                 prev_states = outputs['cache']
-                
+
+
+
         total_sub_batch_loss = (total_sub_batch_loss / total_sub_batch_lengths)
-        total_sub_batch_commit_loss = sum(total_sub_batch_commit_loss) / total_sub_batch_lengths.sum()
-        
-        total_ntmseloss = (total_ntmseloss / total_sub_batch_lengths)
-      
-        #total_codebook_usage = (total_codebook_usage / total_sub_batch_lengths[1:])
-        #per_layer_codebook_usage = {f'codebook_usage_layer_{i+1}': total_codebook_usage[i].item() for i in range(len(total_codebook_usage))}
-        
-        per_layer_loss = {f'loss_layer_{i}': total_sub_batch_loss[i].item() for i in range(len(total_sub_batch_loss))}
-        per_layer_loss_ntmse = {f'loss_ntmse_layer_{i}': total_ntmseloss[i].item() for i in range(len(total_ntmseloss))}
         
 
+        per_layer_loss = {f'loss_layer_{i}': total_sub_batch_loss[i].item() for i in range(len(total_sub_batch_loss))}
         total_sub_batch_loss = total_sub_batch_loss.mean()
         total_sub_batch_loss_todisplay = total_sub_batch_loss.item()
-        total_sub_batch_loss = total_sub_batch_loss + total_ntmseloss.mean() + total_sub_batch_commit_loss
-
-        
+    
         #total_sub_batch_commit_loss = sum(total_sub_batch_commit_loss) / len(total_sub_batch_commit_loss)
-        #total_sub_batch_loss += total_sub_batch_commit_loss
+    
         total_sub_batch_lengths = 0
         losses.append(total_sub_batch_loss_todisplay)
         scaler.scale(total_sub_batch_loss).backward() if exists(scaler) else total_sub_batch_loss.backward()
-        '''if args.clip_gradients == True:
+        if args.clip_gradients == True:
             scaler.unscale_(optim) if exists(scaler) else None
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_gradients_value) '''
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_gradients_value) 
         scaler.step(optim) if exists(scaler) else optim.step()
         scaler.update() if exists(scaler) else None
         optim.zero_grad()
@@ -357,21 +328,20 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
             wandb.log({
                 'train_loss': total_sub_batch_loss_todisplay,
                 'lrate': cur_lr,
-                'epoch': epoch,
-                **per_layer_loss,
-                **per_layer_loss_ntmse,
+                'epoch': epoch, 
+                **per_layer_loss, 
             })
-
             
     loss_end = sum(losses) / len(losses)
     if args.wandb:
         wandb.log({'train_loss_end': loss_end, 'epoch': epoch})
 
     torch.cuda.empty_cache()
-    model.layers.depth = normal_depth
-
     return loss_end
 
+
+def load_csv(path): 
+    return pd.read_csv(path, low_memory=False)
 
 def main(args):
 
@@ -380,8 +350,8 @@ def main(args):
     tokenizer = load_tokenizer(model_path=tokenizer_path)
     model = autoload(config=config, tokenizer=tokenizer)
 
-    get_data = lambda hyp: order_recordings_by_start_time(sort_hypothesis_by_recording(load_pkl(hyp)))
-    train_data, dev_data = get_data(args.train_hyp), get_data(args.dev_hyp)
+    train_data, dev_data = map(load_csv, [args.train_data, args.dev_data])
+    print(f'Loaded {len(train_data)} train samples and {len(dev_data)} dev samples')
 
     epoch_prev = 0
     if args.checkpoint != '':
@@ -398,15 +368,13 @@ def main(args):
     val_samples = create_dataset_samples(
         dev_data,
         num_utterances = args.utts_per_sample, 
-        num_negatives = 0,
-        max_gap = args.max_allowed_utterance_gap,
         shuffle = False 
     )
 
     validate_one_epoch(
         args,
         model = model,
-        val_dataloader = Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False),
+        val_dataloader = Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False, split_into_splits=15),
         device = device,
         sanity_check = True
     )
@@ -414,10 +382,9 @@ def main(args):
     train_sample_args = {
         'recordings': train_data,
         'num_utterances': args.utts_per_sample,
-        'num_negatives': 0,
-        'max_gap': args.max_allowed_utterance_gap,
         'shuffle': True,
     }
+    train_sampler = Sampler(create_dataset_samples(**train_sample_args), batch_size=args.batch_size, tokenizer=tokenizer, shuffle=True, split_into_splits=400)
 
     ema = ExponentialMovingAverage(model.parameters(), decay=0.99999) 
     scaler = GradScaler() if args.mixed_precision else None
@@ -430,20 +397,17 @@ def main(args):
         wandb.watch(model, log='all')
         print(f'\n\nWandb initialized with id {wandb.run.id}\n\n')
 
-    for p in model.parameters(): # backward hook to clip gradients
-        if p.requires_grad:
-            p.register_hook(lambda grad: torch.clamp(grad, -args.clip_gradients_value, args.clip_gradients_value))
-
     results = {}
     saved_checkpoints = []
     for epoch_ in range(args.epochs): # todo move epoch loop to model utils as is consistent across model types
-        try:
+        try: # for cuda out of memory errors
             epoch = epoch_ + epoch_prev
             #train_dataloader.sampler.set_epoch(epoch)
 
+            
             # args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None
             loss = train_one_epoch(args, epoch, model, optim, schedular, # create new train samples each epoch so the negatives change
-                train_dataloader=Sampler(create_dataset_samples(**train_sample_args), batch_size=args.batch_size, tokenizer=tokenizer, shuffle=True),
+                train_dataloader=train_sampler,
                 device=device, 
                 scaler=scaler, 
                 ema=ema
@@ -462,7 +426,7 @@ def main(args):
                 vloss = validate_one_epoch(
                     args,
                     model, 
-                    Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False), 
+                    Sampler(val_samples, batch_size=args.batch_size, tokenizer=tokenizer, shuffle=False, split_into_splits=600), 
                     device, 
                     sanity_check=False
                 )
@@ -498,22 +462,27 @@ def main(args):
                 saved_checkpoints.sort(key=lambda x: x['vloss'])
                 to_remove = saved_checkpoints.pop()
                 os.remove(to_remove['path']) 
-        except RuntimeError as e:
-            print(f'RuntimeError: {e}')
-            # get full traceback
-            traceback.print_exc()
 
+        except RuntimeError as e:
             if str(e).startswith('CUDA out of memory'):
-                print('CUDA out of memory, trying to recover')
+                print('): CUDA out of memory!!!! trying to recover ); \n Please download more GPUs')
                 torch.cuda.empty_cache()
+                model = model.to(device)
                 continue
+            else:
+                raise e
+
+        finished = train_sampler.step()
+        if finished:
+            print('FINISHED TRAINING -- EXITING')
+            break
             
             
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--train_hyp', type=str, required=True)
-    parser.add_argument('--dev_hyp', type=str, required=True)
+    parser.add_argument('--train_data', type=str, default='/store/store1/data/open_subtitles_normalised/train.csv')
+    parser.add_argument('--dev_data', type=str, default='/store/store1/data/open_subtitles_normalised/dev.csv')
     parser.add_argument('-utts','--utts_per_sample', type=int, default=5)
     parser.add_argument('-batch','--batch_size', type=int, default=3)
     parser.add_argument('-mgap','--max_allowed_utterance_gap', type=float, default=10.0, help='max allowed gap between utterances in seconds')

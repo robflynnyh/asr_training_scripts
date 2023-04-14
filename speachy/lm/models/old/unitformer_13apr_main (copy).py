@@ -431,51 +431,41 @@ class transformer(nn.Module):
             norm = False
         )
 
-        self.halfers = nn.ModuleList([])
+        self.halfer = PreNorm(dim=dim, fn=Halfer(dim, exp_f=4))
 
         self.codebook_dim = 16
-        self.codebook_heads = 16
-        self.codebook_vocab = 1024
-        
+        self.codebook_heads = 1
+        self.codebook_vocab = 8192
         self.vqs = nn.ModuleList([])
-            
-
-        self.prediction_layers = nn.ModuleList([])
-        self.next_token_prediction_layers = nn.ModuleList([])
-
-        self.attn_ffs = nn.ModuleList([])
-        for lth in range(depth):
-            self.attn_ffs.append(AttentionFFstack(
-                total_depth=self.inner_depth,
-                dim=dim,
-                n_heads=heads,
-                head_dim=dim_head,
-                causal=causal,
-                dropout=dropout,
-                **kwargs
-            ))
-
-            if lth == 0:
-                self.prediction_layers.append(PredictionLayer(dim, base_vocab_size))
-            else:
-                self.prediction_layers.append(PredictionLayer(dim, self.codebook_vocab*self.codebook_heads))
-
-            self.next_token_prediction_layers.append(PredictionLayer(dim, dim))
-            if lth < depth - 1:
-                self.vqs.append(
-                    RandomProjectionQuantizer(
-                        dim = dim,
-                        codebook_dim = self.codebook_dim,
-                        codebook_size = self.codebook_vocab,
-                        num_codebooks = self.codebook_heads,    
-                    )
+        for lth in range(depth-1):
+            self.vqs.append(
+                RandomProjectionQuantizer(
+                    dim = dim,
+                    codebook_dim = self.codebook_dim,
+                    codebook_size = self.codebook_vocab,
+                    num_codebooks = self.codebook_heads,
                 )
-                self.halfers.append(PreNorm(dim=dim, fn=Halfer(dim, exp_f=8), elementwise_affine = True))
-                self.halfers[-1].fn.requires_grad_(False)
+            )
+
+        self.prediction_layer = PredictionLayer(dim, self.codebook_vocab*self.codebook_heads)
+
+        self.attn_ff = AttentionFFstack(
+            total_depth=self.inner_depth,
+            dim=dim,
+            n_heads=heads,
+            head_dim=dim_head,
+            causal=causal,
+            dropout=dropout,
+            **kwargs
+        )
 
         self.einopsfn = EinopsFn()
 
-
+        self.vocab_prediction_layer = PredictionLayer(dim, base_vocab_size)
+        self.next_token_prediction_layer = PredictionLayer(dim, dim)
+       
+        self.pred_scaler = nn.Parameter(torch.tensor(1.0))
+ 
 
     @staticmethod
     def create_custom_forward(module):
@@ -556,14 +546,25 @@ class transformer(nn.Module):
         loss = self.checkpoint(0, self.einopsfn, x, y, 'b n d, b n d -> b n')
         loss = (-1) * loss # maximise similarity
         loss = loss + 8 # shift so that loss is positive (number of groups)
-        
+        loss = loss ** 2
         loss = loss.masked_fill(mask, 0)
         loss = loss.sum() / (~mask).sum()
         if torch.isnan(loss): # empty sequence
             loss = torch.tensor(0, device=x.device, dtype=x.dtype)
         return loss 
 
-
+    def orthoginal_reg_loss(self, x, mask):
+        B,N,D = x.shape
+        x = l2norm(x, groups=8)
+        sim = self.checkpoint(0, self.einopsfn, x, x, 'b i d, b j d -> b i j')
+        sim = sim ** 2
+        sim = sim.masked_fill(mask[:,:,None], 0)
+        sim = sim.masked_fill(mask[:,None,:], 0)
+        #combined_mask = mask[:,:,None] * mask[:,None,:]
+        loss = sim.sum() / (~mask[:,:,None]).sum() / (~mask[:,None,:]).sum()
+        if torch.isnan(loss): # empty sequence
+            loss = torch.tensor(0, device=x.device, dtype=x.dtype)
+        return loss
 
     def forward(self, x, length, cache=None, **kwargs):
         
@@ -586,27 +587,26 @@ class transformer(nn.Module):
         xbelow = x.clone()
 
         for i in range(self.depth):
-            attn_ff, pred_layer, ntpl = self.attn_ffs[i], self.prediction_layers[i], self.next_token_prediction_layers[i]
-            
-
+          
             ## attention ff blocks ##
             attn_cache = [cache[ix]['cache'][0] if exists(cache) else None for ix in range(i*self.inner_depth, i*self.inner_depth+self.inner_depth)] 
-            x, kvs = self.checkpoint(i, attn_ff, x, pos_bias, attn_mask, attn_cache, cache_indices)
+            x, kvs = self.checkpoint(i, self.attn_ff, x, pos_bias, attn_mask, attn_cache, cache_indices)
     
             cached_kvs.extend(kvs)
             cache_lengths.extend([total_lens]*len(kvs))
             ## attention ff blocks ##
             if i!= 0:
                 z = x
-                w = self.checkpoint(i, ntpl, x.detach())
-                ntmseloss = self.next_token_mse_loss(w, xbelow.detach(), lengths[-1])
+                pred_layer = self.prediction_layer
+                w = self.checkpoint(i, self.next_token_prediction_layer, x)
+                ntmseloss = self.next_token_mse_loss(w, xbelow, lengths[-1])
                 ntmselosses.append(ntmseloss)
                 zsim = self.checkpoint(i, pred_layer, z)
                 zsim = rearrange(zsim, 'b n (h v) -> b h n v', h=self.codebook_heads)
             else:
-                zsim = self.checkpoint(i, pred_layer, x)
-                w = self.checkpoint(i, ntpl, x.detach())
-                ntmseloss = self.checkpoint(i, self.next_token_mse_loss, w, xbelow.detach(), lengths[-1])
+                zsim = self.checkpoint(i, self.vocab_prediction_layer, x)
+                w = self.checkpoint(i, self.next_token_prediction_layer, x)
+                ntmseloss = self.checkpoint(i, self.next_token_mse_loss, w, xbelow, lengths[-1])
                 ntmselosses.append(ntmseloss)
         
             clen = length.clone()
@@ -624,9 +624,9 @@ class transformer(nn.Module):
             next_token_preds.append(ntp)
         
 
+            commitment_loss.append(self.checkpoint(i, self.orthoginal_reg_loss, x, mask))
             if i != self.depth-1:
-                halfer = self.halfers[i]
-                x, length = self.checkpoint(i, halfer, x, length)
+                x, length = self.checkpoint(i, self.halfer, x, length)
                 x_outs.append(x)
                 xbelow = x.clone()
                 lengths.append(length.clone())
@@ -638,8 +638,8 @@ class transformer(nn.Module):
                 cache_indices = self.get_cache_indices(x_len, cache_len, curcache['cache'], x) if exists(curcache) else None
 
                 B, N, D = x.shape
-                vq = self.vqs[i]
-                indices = self.checkpoint(i, vq, x)
+
+                indices = self.checkpoint(i, self.vqs[i], x)
                 if len(indices.shape) == 2:
                     indices = rearrange(indices, 'b n -> b n ()') # add dummy head dimension
 
@@ -647,7 +647,7 @@ class transformer(nn.Module):
 
         #orth_loss = orthogonal_loss_fn(pred_matrix)
         #commitment_loss =  orth_loss.sum() * 10.0 
-        commitment_loss = torch.tensor(0, device=x.device, dtype=x.dtype) 
+        commitment_loss = sum(commitment_loss) / len(commitment_loss)
 
         #print(len(cached_kvs), len(layer_below_next_token_preds), len(cache_lengths), len(next_token_preds))
         assert len(cached_kvs) == len(cache_lengths), 'something went wrong'
@@ -716,7 +716,7 @@ class transformer_lm(nn.Module):
             heads = 1
             if len(logits.shape) == 4:
                 heads = logits.shape[1]
-                length = repeat(length, 'b -> (b h)', h=heads).clone().contiguous()
+                length = repeat(length, 'b -> (b h)', h=heads)
                 logits = rearrange(logits, 'b h n v -> (b h) n v')
                 targets = rearrange(targets, 'b n (h 1) -> (b h) n')
                 first_token_pred = None if not exists(first_token_pred) else rearrange(first_token_pred, 'b h n v -> (b h) n v')

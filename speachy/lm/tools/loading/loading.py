@@ -52,7 +52,7 @@ def load_unitformer(config:OmegaConf, tokenizer, **kwargs):
     transformer = transformer_lm(
         dim = config.get('d_model', 256),
         vocab_size = tokenizer.vocab_size,
-        depth = config.get('n_layers', 8),
+        depth = config.get('depth', 5),
         heads = config.get('n_heads', 8),
         dim_head = config.get('dim_head', 32),
         causal = config.get('causal', True),

@@ -9,8 +9,10 @@ from tqdm import tqdm
 import numpy as np
 import wandb
 from torch.optim.lr_scheduler import CyclicLR
-from model_utils import load_checkpoint, load_nemo_checkpoint, load_sc_model as load_model, write_to_log, \
+from model_utils import load_checkpoint, load_nemo_checkpoint, write_to_log, \
     squeeze_batch_and_to_device, save_checkpoint, draw_text, load_schedular_data, save_schedular_data
+
+from speachy.asr.utils import load_audio_model as load_model, get_model_class
 
 from contextlib import nullcontext
 
@@ -198,7 +200,7 @@ def train_one_epoch(model, optim, schedular, train_dataloader, device, scaler=No
 
 
 def main(args):
-    model = load_model(args)
+    model = load_model(args, model_class=get_model_class(args=args))
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
@@ -328,6 +330,8 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', type=str, default='')
     parser.add_argument('--nemo_checkpoint', action='store_true')
     parser.add_argument('--model_config', type=str, default='')
+
+    parser.add_argument('-model_class', '--model_class', type=str, default='EncDecSCCTCModelBPE')
 
     parser.add_argument('--save_top_k', type=int, default=5)
 

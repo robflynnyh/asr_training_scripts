@@ -8,7 +8,7 @@ from functools import partial
 import string
 from math import ceil
 from einops import einsum as einsumops
-from vector_quantize_pytorch import RandomProjectionQuantizer
+from vector_quantize_pytorch.vector_quantize_pytorch import VectorQuantize
 from typing import Optional, Tuple, List, Dict, Union, Callable
 import torch_scatter
 
@@ -375,6 +375,10 @@ def map_to_sequence(int_list):
     seq[unique_ints] = torch.arange(len(unique_ints))
     return seq[int_list]
 
+def nancheck(x, location='unknown'):
+    if torch.isnan(x).any():
+        print(f'nan detected at {location}')
+        raise ValueError
 
 class EinopsFn(nn.Module):
     def __init__(self):
@@ -382,19 +386,6 @@ class EinopsFn(nn.Module):
     def forward(self, x, y, pattern):
         return einsumops(x, y, pattern)
 
-def stable_weighted_softmax(logits, weights):
-    ## logits: B, H, N, V # weights: 1 H 1 V ##
-    stable_logits = logits - logits.max(dim=-1, keepdim=True)[0] # subtract max to make logits more stable
-    weights = weights.clamp(min=torch.finfo(weights.dtype).eps)
-    numerators = torch.exp(stable_logits) * weights
-    denominators = numerators.sum(dim=-1, keepdim=True) 
-    return numerators / (denominators + torch.finfo(denominators.dtype).eps)
-    
-class StableWeightedSoftmax(nn.Module):
-    def __init__(self):
-        super().__init__()
-    def forward(self, logits, weights):
-        return stable_weighted_softmax(logits, weights)
 
 class transformer(nn.Module):
     def __init__(
@@ -411,11 +402,9 @@ class transformer(nn.Module):
         super().__init__()
     
 
-        ff_mult = kwargs.get('ff_mult', 4)
         self.checkpoint_every_n = kwargs.get('checkpoint_every_n', 0)
         self.base_vocab = base_vocab_size
         self.max_vocab = kwargs.get('max_vocab', 10000)
-        commitment_weight = kwargs.get('commitment_weight', 1.0)
         self.inner_depth = kwargs.get('inner_depth', 2)
 
         self.embedding = nn.Embedding(base_vocab_size, dim)
@@ -431,51 +420,49 @@ class transformer(nn.Module):
             norm = False
         )
 
-        self.halfers = nn.ModuleList([])
+        self.halfer = PreNorm(dim=dim, fn=Halfer(dim, exp_f=4))        
 
-        self.codebook_dim = 16
-        self.codebook_heads = 16
-        self.codebook_vocab = 1024
-        
-        self.vqs = nn.ModuleList([])
-            
 
-        self.prediction_layers = nn.ModuleList([])
-        self.next_token_prediction_layers = nn.ModuleList([])
-
-        self.attn_ffs = nn.ModuleList([])
-        for lth in range(depth):
-            self.attn_ffs.append(AttentionFFstack(
-                total_depth=self.inner_depth,
-                dim=dim,
-                n_heads=heads,
-                head_dim=dim_head,
-                causal=causal,
-                dropout=dropout,
-                **kwargs
-            ))
-
-            if lth == 0:
-                self.prediction_layers.append(PredictionLayer(dim, base_vocab_size))
-            else:
-                self.prediction_layers.append(PredictionLayer(dim, self.codebook_vocab*self.codebook_heads))
-
-            self.next_token_prediction_layers.append(PredictionLayer(dim, dim))
-            if lth < depth - 1:
-                self.vqs.append(
-                    RandomProjectionQuantizer(
-                        dim = dim,
-                        codebook_dim = self.codebook_dim,
-                        codebook_size = self.codebook_vocab,
-                        num_codebooks = self.codebook_heads,    
-                    )
-                )
-                self.halfers.append(PreNorm(dim=dim, fn=Halfer(dim, exp_f=8), elementwise_affine = True))
-                self.halfers[-1].fn.requires_grad_(False)
+        self.attn_ff = AttentionFFstack(
+            total_depth=self.inner_depth,
+            dim=dim,
+            n_heads=heads,
+            head_dim=dim_head,
+            causal=causal,
+            dropout=dropout,
+            **kwargs
+        )
 
         self.einopsfn = EinopsFn()
 
+        self.n_negatives = kwargs.get('n_negatives', 30)
 
+        self.vocab_prediction_layer = PredictionLayer(dim, self.base_vocab)
+        self.prediction_layer = PredictionLayer(dim, dim)
+        #self.bottleneck = PredictionLayer(dim, 12)
+        self.pred_scaler = nn.Parameter(torch.tensor(1.0))
+        self.pred_offset = nn.Parameter(torch.tensor(0.0))
+
+        self.base_codebook_size = 40
+        self.codebook_dim = 32
+        self.codebook_heads = 1
+        self.vqs = nn.ModuleList([])
+        for lth in range(depth-1):
+            print(lth, self.base_codebook_size  * (lth+1) * (2*lth+1))
+            self.vqs.append(
+                VectorQuantize(
+                    dim = dim,
+                    codebook_size = self.base_codebook_size * (lth+1) * (2*lth+1)  ,
+                    codebook_dim = self.codebook_dim,
+                    decay = 0.825,
+                    use_cosine_sim = False,
+                    threshold_ema_dead_code = 0.25,
+                    separate_codebook_per_head = True if self.codebook_heads > 1 else False,
+                    heads = self.codebook_heads,
+                    kmeans_init = False,
+                )
+            )
+ 
 
     @staticmethod
     def create_custom_forward(module):
@@ -544,91 +531,85 @@ class transformer(nn.Module):
         return q_mask, attn_mask, total_len, x_len, cache_len, pos_bias
 
 
-    def next_token_mse_loss(self, x, y, length):
-        '''minimise MSE between each x_t and y_t+1'''
-        B,N,D = x.shape
-        y = y[:,1:].clone()
-        x = x[:,:-1].clone()
-        # mask that is shifted for next token prediction
-        mask = torch.arange(N-1, device=x.device).expand(B,-1) >= length[:,None] -2 # -2 bcos -1 for N-1 arange and -1 for shifted mask
-        x = l2norm(x, groups=8)
-        y = l2norm(y, groups=8)
-        loss = self.checkpoint(0, self.einopsfn, x, y, 'b n d, b n d -> b n')
-        loss = (-1) * loss # maximise similarity
-        loss = loss + 8 # shift so that loss is positive (number of groups)
+    @staticmethod
+    def sample_idx(b_num:int, b_idx:List[torch.Tensor], negatives:int, slens:torch.Tensor, flat_idx:torch.Tensor):
+        c_b_idx = b_idx[b_num]
+        c_slen = slens[b_num]
+
+        curin_seq = c_b_idx[None,:]
+        curin_seq = repeat(curin_seq, '1 n -> m n', m=curin_seq.shape[1])
+        diag = torch.diag(torch.ones(c_slen - 1, dtype=torch.long), diagonal=1)
+        mask = diag != 0
+        mask[-1][torch.randint(0, c_slen, (1,))] = 1
+        seq_negs = torch.masked_select(curin_seq, ~mask).view(c_slen, -1)
+        m,n = seq_negs.shape
         
-        loss = loss.masked_fill(mask, 0)
-        loss = loss.sum() / (~mask).sum()
-        if torch.isnan(loss): # empty sequence
-            loss = torch.tensor(0, device=x.device, dtype=x.dtype)
-        return loss 
+        rand = torch.rand(m,n)
+        index = torch.argsort(rand, dim=1)
+        index = index[:, :negatives]
+        seq_negs = rearrange(seq_negs.gather(1, index), 'm n -> n m')
+        
+        if seq_negs.shape[0] < negatives: # sample from the rest of the batch if not enough negatives
+            remaining = negatives - seq_negs.shape[0]
+            # get indices in flat_idx that are not in c_b_idx
+            c_flat_idx = flat_idx[~torch.isin(flat_idx, c_b_idx)]
+            # sample from c_flat_x N (negatives) times c_slen (slens) times
+            c_negative_idx = torch.randint(0, c_flat_idx.shape[0], (remaining, c_slen))
+            # get the indexes in flat_idx that are in c_b_idx
+            all_negs = torch.cat([seq_negs, c_negative_idx], dim=0)
+            seq_negs = all_negs       
 
-
+        return seq_negs
 
     def forward(self, x, length, cache=None, **kwargs):
         
         intermediate_logits = []
-        next_token_preds = []
-        ntmselosses = []
+        intermediate_losses = []
+        next_token_preds = [] # not doing rn
         
         intermediate_targets = [None] # for the first layer we use ground truth tokens as targets
+        codebook_usage = []
         commitment_loss = []
         cache_lengths = []
         lengths = [length.clone()]
         cached_kvs = []
         x_outs = []
 
- 
+    
         curcache = cache[0] if exists(cache) else None
         mask, attn_mask, total_lens, x_len, cache_len, pos_bias = self.create_masks_and_positions(x, length, curcache)
         cache_indices = self.get_cache_indices(x_len, cache_len, curcache['cache'], x) if exists(curcache) else None
 
-        xbelow = x.clone()
 
         for i in range(self.depth):
-            attn_ff, pred_layer, ntpl = self.attn_ffs[i], self.prediction_layers[i], self.next_token_prediction_layers[i]
-            
-
+          
             ## attention ff blocks ##
             attn_cache = [cache[ix]['cache'][0] if exists(cache) else None for ix in range(i*self.inner_depth, i*self.inner_depth+self.inner_depth)] 
-            x, kvs = self.checkpoint(i, attn_ff, x, pos_bias, attn_mask, attn_cache, cache_indices)
+            x, kvs = self.checkpoint(i, self.attn_ff, x, pos_bias, attn_mask, attn_cache, cache_indices)
     
             cached_kvs.extend(kvs)
             cache_lengths.extend([total_lens]*len(kvs))
             ## attention ff blocks ##
-            if i!= 0:
-                z = x
-                w = self.checkpoint(i, ntpl, x.detach())
-                ntmseloss = self.next_token_mse_loss(w, xbelow.detach(), lengths[-1])
-                ntmselosses.append(ntmseloss)
-                zsim = self.checkpoint(i, pred_layer, z)
-                zsim = rearrange(zsim, 'b n (h v) -> b h n v', h=self.codebook_heads)
-            else:
-                zsim = self.checkpoint(i, pred_layer, x)
-                w = self.checkpoint(i, ntpl, x.detach())
-                ntmseloss = self.checkpoint(i, self.next_token_mse_loss, w, xbelow.detach(), lengths[-1])
-                ntmselosses.append(ntmseloss)
-        
-            clen = length.clone()
             
             if i!= 0:
-                clen = repeat(clen, 'b -> (b h)', h=self.codebook_heads)
-                zsim = rearrange(zsim, 'b h n v -> (b h) n v') 
-
-            ntp = grab_last_token(zsim, clen)   
-            if i!= 0:
-                ntp = rearrange(ntp, '(b h) n v -> b h n v', h=self.codebook_heads)
-                zsim = rearrange(zsim, '(b h) n v -> b h n v', h=self.codebook_heads)
-                
-            intermediate_logits.append(zsim)
-            next_token_preds.append(ntp)
-        
+                z = x
+                z = self.checkpoint(i, self.prediction_layer, x)
+                z = l2norm(z, dim=-1, groups=8)
+                z = rearrange(z, 'b seq d -> b seq 1 d')
+                scaler, offset = self.pred_scaler, self.pred_offset
+                xsimpnegs = self.checkpoint(i, self.einopsfn, z, posnegs, 'b n o d, b n k d -> b n k') * scaler + offset
+                l = xsimpnegs.log_softmax(dim=-1)
+                l = l[:,:,0] # get the positive samples
+                l = -l.masked_fill(lmask, 0)
+                l = l.sum() / (~lmask).sum()
+                intermediate_losses.append(l)
+            else:
+                z = self.checkpoint(i, self.vocab_prediction_layer, x)
+                intermediate_logits.append(z)
 
             if i != self.depth-1:
-                halfer = self.halfers[i]
-                x, length = self.checkpoint(i, halfer, x, length)
-                x_outs.append(x)
-                xbelow = x.clone()
+                x, length = self.checkpoint(i, self.halfer, x, length)
+                
                 lengths.append(length.clone())
                 
                 curcache = cache[(i+1)*self.inner_depth] if exists(cache) else None
@@ -637,34 +618,84 @@ class transformer(nn.Module):
             
                 cache_indices = self.get_cache_indices(x_len, cache_len, curcache['cache'], x) if exists(curcache) else None
 
-                B, N, D = x.shape
+                ###################
+                # sample negatives
+                ###################
                 vq = self.vqs[i]
-                indices = self.checkpoint(i, vq, x)
-                if len(indices.shape) == 2:
-                    indices = rearrange(indices, 'b n -> b n ()') # add dummy head dimension
+                xbottlenecked, cluster_ids, _ = self.checkpoint(i, vq, x)
+                if len(cluster_ids.shape) == 2:
+                    cluster_ids = rearrange(cluster_ids, 'b n -> b n 1') # add a dummy head dimension
+                ## codebook usage
+                a = rearrange(cluster_ids, 'b n h -> h (b n)')
+                a += (torch.arange(0, a.shape[0], device=x.device) * vq.codebook_size)[:,None]
+                a = rearrange(a, 'h o -> (h o)')
+                usage = (a.unique().shape[0] / (vq.codebook_size * self.codebook_heads)) * 100
+                codebook_usage.append(usage)                  
+                ## codebook usage
+                
+                x_outs.append(xbottlenecked)
+                
+                B, N, D = xbottlenecked.shape
+                #if self.training:
+                b_idx = []
+                # create a flatened index of all items in all batches 
+                flat_idx = torch.arange(B*N).view(B,N)
+                # set padding to -1
+                flat_idx[length.to('cpu').view(B,1).expand(B,N) < torch.arange(N)+1] = -1
+                # flaten the index
+                for b in range(B):
+                    b_idx.append(flat_idx[b][flat_idx[b] != -1])
+                flat_idx = flat_idx.view(-1)
+                # remove -1
+                flat_idx = flat_idx[flat_idx != -1]
 
-                intermediate_targets.append(indices)
+                negatives_idxs = []
+                for b in range(B):
+                    negatives_idxs.append(self.sample_idx(b_num=b, b_idx=b_idx, negatives=self.n_negatives, slens=length, flat_idx=flat_idx))
 
-        #orth_loss = orthogonal_loss_fn(pred_matrix)
-        #commitment_loss =  orth_loss.sum() * 10.0 
-        commitment_loss = torch.tensor(0, device=x.device, dtype=x.dtype) 
+                negatives_idxsz = torch.nn.utils.rnn.pad_sequence([rearrange(el, 'negatives seq -> (seq negatives)') for el in negatives_idxs], batch_first=True, padding_value=-1)
+                negatives_idxsz = rearrange(negatives_idxsz, 'b (seq negatives) -> b seq negatives', negatives=self.n_negatives)
+
+                x_ = rearrange(xbottlenecked, 'b seq d -> (b seq) d') 
+                x_ = torch.cat([x_, torch.zeros(B*N, D, device=x_.device)], dim=0) # add zero to the end of the sequence
+                
+                negatives_idxsz_ = negatives_idxsz.clone()
+                negatives_idxsz_[negatives_idxsz_ == -1] = B*N 
+                negatives_idxsz_ = negatives_idxsz_.to(x.device)
+                negatives_idxsz_ = rearrange(negatives_idxsz_, 'b seq negatives -> (b seq negatives) 1').expand(-1, D)
+
+                negs = torch.gather(x_, dim=0, index=negatives_idxsz_)
+                negs = rearrange(negs, '(b seq negatives) d -> b seq negatives d', b=B, negatives=self.n_negatives)
+
+                # now we need to get the positive samples i.e n+1 for each n in N # we can do this by shifting the data by -1
+                xp = xbottlenecked.roll(shifts=-1, dims=1)[:,:,None,:]
+
+                posnegs = torch.cat([xp, negs], dim=2) #if self.training else xp
+                # l2 normalize
+                posnegs = l2norm(posnegs, dim=-1, groups=8)
+                lmask = ~(torch.arange(N, device=length.device)[None,:] < (length-1)[:,None]) # we need to subtract 1 because we shifted the data by -1
+                ###################
+                # sample negatives
+                ###################
+                
+
+        commitment_loss = sum(commitment_loss)
 
         #print(len(cached_kvs), len(layer_below_next_token_preds), len(cache_lengths), len(next_token_preds))
         assert len(cached_kvs) == len(cache_lengths), 'something went wrong'
   
         cached_kvs = [{'cache': curcache, 'cache_lengths': curlen} for curcache, curlen in zip(cached_kvs, cache_lengths)]
-        cached_kvs = {'layers': cached_kvs, 'next_sentence_pred': next_token_preds}
+        cached_kvs = {'layers': cached_kvs} #, 'next_sentence_pred': next_token_preds}
 
-        
-        
         return {
             'logits': intermediate_logits,
             'targets': intermediate_targets,
+            'losses': intermediate_losses,
             'cache': cached_kvs,
             'commitment_loss': commitment_loss,
-            'ntmselosses': torch.stack(ntmselosses),
             'lengths': torch.stack(lengths),
-            'x_outs': x_outs
+            'x_outs': x_outs,
+            'codebook_usage': torch.tensor(codebook_usage, device=x.device),
         }
 
 
@@ -716,7 +747,7 @@ class transformer_lm(nn.Module):
             heads = 1
             if len(logits.shape) == 4:
                 heads = logits.shape[1]
-                length = repeat(length, 'b -> (b h)', h=heads).clone().contiguous()
+                length = repeat(length, 'b -> (b h)', h=heads)
                 logits = rearrange(logits, 'b h n v -> (b h) n v')
                 targets = rearrange(targets, 'b n (h 1) -> (b h) n')
                 first_token_pred = None if not exists(first_token_pred) else rearrange(first_token_pred, 'b h n v -> (b h) n v')
@@ -739,26 +770,26 @@ class transformer_lm(nn.Module):
             mask =  token_lens_to_mask(token_lens=length)
             
             targets = mark_padding(targets=targets, mask=mask, pad_id=eos_id)
-            loss = loss_fn(logits, targets) #* heads # multiply by heads 
+            loss = loss_fn(logits, targets) 
             
             return loss
 
     
-        if exists(prev_cache):
-            assert len(tlm_out['logits']) == len(prev_cache['next_sentence_pred']), 'something went wrong'
+        #if exists(prev_cache):
+        #    assert len(tlm_out['logits']) == len(prev_cache['next_sentence_pred']), 'something went wrong'
         for lth in range(len(tlm_out['logits'])):
             logits = tlm_out['logits'][lth]
             targets = tlm_out['targets'][lth]
             
             #print(targets.reshape(-1).unique().shape)
-            first_token_pred = prev_cache['next_sentence_pred'][lth] if exists(prev_cache) else None
+            first_token_pred = None #prev_cache['next_sentence_pred'][lth] if exists(prev_cache) else None
             
             lengths = tlm_out['lengths'][lth]
             loss = calc_token_loss(logits, targets.clone(), first_token_pred, lengths.clone())
             if exists(loss): # incase of single token sequences
                 losses.append(loss)
               
-        tlm_out['token_losses'] = torch.stack(losses) 
+        tlm_out['token_losses'] = torch.stack(losses + tlm_out['losses']) 
 
         return tlm_out
 
