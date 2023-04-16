@@ -289,7 +289,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                             labels=tokens,
                             length=token_lens,
                             cache=prev_states,
-                            calc_loss=True,
+                            calc_loss=False,
                         )
                 model.train()
 
@@ -365,7 +365,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
 
 
 def load_csv(path): 
-    return pd.read_csv(path, low_memory=False)
+    return pd.read_csv(path, low_memory=False, nrows=10000000)
 
 def main(args):
 
