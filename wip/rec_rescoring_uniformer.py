@@ -244,6 +244,12 @@ def intermediate_loss(loss_fn, interim_logits, targets):
 
 import random
 
+def get_depth(p_stop):
+    depth = 1
+    while torch.rand(1).item() < p_stop:
+        depth += 1
+    return depth
+
 def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, device, scaler, ema=None):
     model.train()
     train_dataloader = list(train_dataloader)
@@ -252,15 +258,22 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
     loss_iterim = []
     autocast_device = 'cuda' if torch.cuda.is_available() else 'cpu' # for autocast if using mixed precision
     print('Training epoch') 
+    
+    normal_depth = 5
+    model.layers.depth = normal_depth
+    p_stop = 0.5
+
     prev_loss = torch.zeros(10, device=device)
     for batch in pbar:
+        model.layers.depth = get_depth(p_stop)
+        print(f'current depth: {model.layers.depth}')
         prev_states = None
         total_sub_batch_loss = torch.zeros(model.layers.depth, device=device)
         total_sub_batch_lengths = torch.zeros(model.layers.depth, device=device)
         total_ntmseloss = torch.zeros(model.layers.depth, device=device)
         total_sub_batch_commit_loss = []
 
-        
+
 
         with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
             for ix, sub_batch_ in enumerate(batch):
@@ -345,7 +358,6 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 'train_loss': total_sub_batch_loss_todisplay,
                 'lrate': cur_lr,
                 'epoch': epoch,
-                'commitment_loss': total_sub_batch_commit_loss.item(),
                 **per_layer_loss,
                 **per_layer_loss_ntmse,
             })
@@ -356,6 +368,8 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
         wandb.log({'train_loss_end': loss_end, 'epoch': epoch})
 
     torch.cuda.empty_cache()
+    model.layers.depth = normal_depth
+
     return loss_end
 
 
@@ -417,7 +431,8 @@ def main(args):
         print(f'\n\nWandb initialized with id {wandb.run.id}\n\n')
 
     for p in model.parameters(): # backward hook to clip gradients
-        p.register_hook(lambda grad: torch.clamp(grad, -args.clip_gradients_value, args.clip_gradients_value))
+        if p.requires_grad:
+            p.register_hook(lambda grad: torch.clamp(grad, -args.clip_gradients_value, args.clip_gradients_value))
 
     results = {}
     saved_checkpoints = []

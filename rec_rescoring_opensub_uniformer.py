@@ -203,22 +203,21 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
             token_lens += 1 if using_bos else 0 # add 1 for bos if using
             tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
     
-            outputs = model(
+            l = model(
                 labels=tokens,
                 length=token_lens,
                 cache=prev_states,
                 calc_loss=True,
             )
-            
 
-            token_len_thing = (outputs['lengths']).sum(-1)
+            '''token_len_thing = (outputs['lengths']).sum(-1)
             token_len_thing[len(outputs['token_losses']):] = 0
             total_sub_batch_lengths += token_len_thing
             total_sub_batch_loss[:len(outputs['token_losses'])] += outputs['token_losses'] * token_len_thing[:len(outputs['token_losses'])]
 
-            prev_states = outputs['cache']
+            prev_states = outputs['cache']'''
 
-        l = (total_sub_batch_loss / total_sub_batch_lengths)
+        #l = (total_sub_batch_loss / total_sub_batch_lengths)
         l = l.mean()
         losses.append(l.item())
 
@@ -283,48 +282,50 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 token_lens += 1 if using_bos else 0 # add 1 for bos if using
                 tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
 
-                outputs = model(
+                total_sub_batch_loss = model(
                     labels=tokens,
                     length=token_lens,
                     cache=prev_states,
                     calc_loss=True,
                 )
 
-                token_len_thing = (outputs['lengths']).sum(-1)
+                ''''token_len_thing = (outputs['lengths']).sum(-1)
                 token_len_thing[len(outputs['token_losses']):] = 0
                 total_sub_batch_lengths += token_len_thing
                 total_sub_batch_loss[:len(outputs['token_losses'])] += outputs['token_losses'] * token_len_thing[:len(outputs['token_losses'])]
                 total_ntmseloss[:len(outputs['ntmselosses'])] += outputs['ntmselosses'] * token_len_thing[:len(outputs['ntmselosses'])]
                 #total_codebook_usage += outputs['codebook_usage'] * token_len_thing[:len(outputs['token_losses'])][1:]
                 total_sub_batch_commit_loss.append(outputs['commitment_loss'].sum() * token_len_thing.sum())
-                prev_states = outputs['cache']
+                prev_states = outputs['cache']'''
 
 
 
-        total_sub_batch_loss = (total_sub_batch_loss / total_sub_batch_lengths)
-        total_sub_batch_commit_loss = sum(total_sub_batch_commit_loss) / total_sub_batch_lengths.sum()
-        
-        total_ntmseloss = (total_ntmseloss / total_sub_batch_lengths)
+        #total_sub_batch_loss = (total_sub_batch_loss / total_sub_batch_lengths)
+        #total_sub_batch_commit_loss = sum(total_sub_batch_commit_loss) / total_sub_batch_lengths.sum()
+        #total_ntmseloss = (total_ntmseloss / total_sub_batch_lengths)
       
         #total_codebook_usage = (total_codebook_usage / total_sub_batch_lengths[1:])
         #per_layer_codebook_usage = {f'codebook_usage_layer_{i+1}': total_codebook_usage[i].item() for i in range(len(total_codebook_usage))}
         
         per_layer_loss = {f'loss_layer_{i}': total_sub_batch_loss[i].item() for i in range(len(total_sub_batch_loss))}
-        per_layer_loss_ntmse = {f'loss_ntmse_layer_{i}': total_ntmseloss[i].item() for i in range(len(total_ntmseloss))}
+        
+        #per_layer_loss_ntmse = {f'loss_ntmse_layer_{i}': total_ntmseloss[i].item() for i in range(len(total_ntmseloss))}
         
 
         total_sub_batch_loss = total_sub_batch_loss.mean()
         total_sub_batch_loss_todisplay = total_sub_batch_loss.item()
-        total_sub_batch_loss = total_sub_batch_loss + total_ntmseloss.mean() + total_sub_batch_commit_loss
+        total_sub_batch_loss = total_sub_batch_loss #+ total_ntmseloss.mean() + total_sub_batch_commit_loss
     
         #total_sub_batch_commit_loss = sum(total_sub_batch_commit_loss) / len(total_sub_batch_commit_loss)
     
         total_sub_batch_lengths = 0
         losses.append(total_sub_batch_loss_todisplay)
         scaler.scale(total_sub_batch_loss).backward() if exists(scaler) else total_sub_batch_loss.backward()
-        if args.clip_gradients == True:
+
+        '''if args.clip_gradients == True:
             scaler.unscale_(optim) if exists(scaler) else None
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_gradients_value) 
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_gradients_value)'''
+
         scaler.step(optim) if exists(scaler) else optim.step()
         scaler.update() if exists(scaler) else None
         optim.zero_grad()
@@ -341,7 +342,6 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 'lrate': cur_lr,
                 'epoch': epoch, 
                 **per_layer_loss,
-                **per_layer_loss_ntmse,
             })
             
     loss_end = sum(losses) / len(losses)
@@ -408,6 +408,10 @@ def main(args):
         ) if args.wandb_id == '' else wandb.init(id=args.wandb_id, resume='allow', **wandb_init)
         wandb.watch(model, log='all')
         print(f'\n\nWandb initialized with id {wandb.run.id}\n\n')
+
+    for p in model.parameters(): # backward hook to clip gradients
+        if p.requires_grad:
+            p.register_hook(lambda grad: torch.clamp(grad, -args.clip_gradients_value, args.clip_gradients_value))
 
     results = {}
     saved_checkpoints = []

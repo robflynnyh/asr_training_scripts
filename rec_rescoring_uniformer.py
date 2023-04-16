@@ -207,7 +207,7 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
             token_lens += 1 if using_bos else 0 # add 1 for bos if using
             tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
     
-            outputs = model(
+            loss = model(
                 labels=tokens,
                 length=token_lens,
                 cache=prev_states,
@@ -215,14 +215,7 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
             )
             
 
-            token_len_thing = (outputs['lengths']).sum(-1)
-            token_len_thing[len(outputs['token_losses']):] = 0
-            total_sub_batch_lengths += token_len_thing
-            total_sub_batch_loss[:len(outputs['token_losses'])] += outputs['token_losses'] * token_len_thing[:len(outputs['token_losses'])]
-
-            prev_states = outputs['cache']
-
-        losses.append((total_sub_batch_loss / total_sub_batch_lengths).mean().item())
+        losses.append((loss).mean().item())
   
         if sanity_check:
             return True
@@ -259,24 +252,15 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
     autocast_device = 'cuda' if torch.cuda.is_available() else 'cpu' # for autocast if using mixed precision
     print('Training epoch') 
     
-    normal_depth = 5
-    model.layers.depth = normal_depth
-    p_stop = 0.5
+   
 
     prev_loss = torch.zeros(10, device=device)
     for batch in pbar:
-        model.layers.depth = get_depth(p_stop)
-        print(f'current depth: {model.layers.depth}')
         prev_states = None
-        total_sub_batch_loss = torch.zeros(model.layers.depth, device=device)
-        total_sub_batch_lengths = torch.zeros(model.layers.depth, device=device)
-        total_ntmseloss = torch.zeros(model.layers.depth, device=device)
-        total_sub_batch_commit_loss = []
-
-
 
         with torch.autocast(device_type=autocast_device) if exists(scaler) else nullcontext(): # for mixed precision
             for ix, sub_batch_ in enumerate(batch):
+                print(ix) ##########################################
                 #print(f'sub_batch {ix+1} / {len(batch)}')
                 sub_batch = batch_to_device(batch=sub_batch_, device=device, return_all=True) 
 
@@ -301,44 +285,29 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
 
 
-                outputs = model(
+                total_sub_batch_loss = model(
                     labels=tokens,
                     length=token_lens,
                     cache=prev_states,
                     calc_loss=True,
                 )
-
-
-                token_len_thing = (outputs['lengths']).sum(-1)
-                token_len_thing[len(outputs['token_losses']):] = 0
-                total_sub_batch_lengths += token_len_thing
-                total_sub_batch_loss[:len(outputs['token_losses'])] += outputs['token_losses'] * token_len_thing[:len(outputs['token_losses'])]
-                total_ntmseloss[:len(outputs['ntmselosses'])] += outputs['ntmselosses'] * token_len_thing[:len(outputs['ntmselosses'])]
-                #total_codebook_usage += outputs['codebook_usage'] * token_len_thing[:len(outputs['token_losses'])][1:]
-                total_sub_batch_commit_loss.append(outputs['commitment_loss'].sum() * token_len_thing.sum())
-                prev_states = outputs['cache']
                 
-        total_sub_batch_loss = (total_sub_batch_loss / total_sub_batch_lengths)
-        total_sub_batch_commit_loss = sum(total_sub_batch_commit_loss) / total_sub_batch_lengths.sum()
         
-        total_ntmseloss = (total_ntmseloss / total_sub_batch_lengths)
-      
         #total_codebook_usage = (total_codebook_usage / total_sub_batch_lengths[1:])
         #per_layer_codebook_usage = {f'codebook_usage_layer_{i+1}': total_codebook_usage[i].item() for i in range(len(total_codebook_usage))}
         
         per_layer_loss = {f'loss_layer_{i}': total_sub_batch_loss[i].item() for i in range(len(total_sub_batch_loss))}
-        per_layer_loss_ntmse = {f'loss_ntmse_layer_{i}': total_ntmseloss[i].item() for i in range(len(total_ntmseloss))}
         
 
         total_sub_batch_loss = total_sub_batch_loss.mean()
         total_sub_batch_loss_todisplay = total_sub_batch_loss.item()
-        total_sub_batch_loss = total_sub_batch_loss + total_ntmseloss.mean() + total_sub_batch_commit_loss
 
         
         #total_sub_batch_commit_loss = sum(total_sub_batch_commit_loss) / len(total_sub_batch_commit_loss)
         #total_sub_batch_loss += total_sub_batch_commit_loss
         total_sub_batch_lengths = 0
         losses.append(total_sub_batch_loss_todisplay)
+        
         scaler.scale(total_sub_batch_loss).backward() if exists(scaler) else total_sub_batch_loss.backward()
         '''if args.clip_gradients == True:
             scaler.unscale_(optim) if exists(scaler) else None
@@ -359,7 +328,6 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 'lrate': cur_lr,
                 'epoch': epoch,
                 **per_layer_loss,
-                **per_layer_loss_ntmse,
             })
 
             
@@ -368,7 +336,6 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
         wandb.log({'train_loss_end': loss_end, 'epoch': epoch})
 
     torch.cuda.empty_cache()
-    model.layers.depth = normal_depth
 
     return loss_end
 
