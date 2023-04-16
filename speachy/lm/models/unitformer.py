@@ -435,8 +435,8 @@ class transformer(nn.Module):
 
         self.halfers = nn.ModuleList([])
 
-        self.codebook_dim = 6
-        self.codebook_heads = 16
+        self.codebook_dim = 16
+        self.codebook_heads = 8
         self.codebook_vocab = 1024
         
         self.vqs = nn.ModuleList([])
@@ -459,10 +459,10 @@ class transformer(nn.Module):
             if lth == 0:
                 self.prediction_layers.append(PredictionLayer(dim, base_vocab_size))
             else:
-                self.prediction_layers.append(PredictionLayer(dim, self.codebook_dim*self.codebook_heads))
+                self.prediction_layers.append(PredictionLayer(dim, self.codebook_dim*self.codebook_heads*self.codebook_heads))
 
             if lth < depth - 1:
-                '''self.vqs.append(
+                self.vqs.append(
                     RandomProjectionQuantizer(
                         dim = dim,
                         codebook_dim = self.codebook_dim,
@@ -470,8 +470,8 @@ class transformer(nn.Module):
                         num_codebooks = self.codebook_heads,    
                     )
                 )
-                '''
-                self.vqs.append(
+                
+                '''self.vqs.append(
                     VectorQuantize(
                         dim=dim,
                         codebook_size=self.codebook_vocab,
@@ -481,8 +481,8 @@ class transformer(nn.Module):
                         separate_codebook_per_head=True,
                         heads=self.codebook_heads,
                     )
-                )
-                self.vqs[-1].requires_grad_(False)
+                )'''
+                #self.vqs[-1].requires_grad_(False)'''
                 self.halfers.append(PreNorm(dim=dim, fn=Halfer(dim, exp_f=8), elementwise_affine = True))
                
 
@@ -599,7 +599,7 @@ class transformer(nn.Module):
         mask, attn_mask, total_lens, x_len, cache_len, pos_bias = self.create_masks_and_positions(x, length, curcache)
         cache_indices = self.get_cache_indices(x_len, cache_len, curcache['cache'], x) if exists(curcache) else None
 
-        all_ema_data = []
+        #all_ema_data = []
 
         for i in range(self.depth):
             attn_ff, pred_layer = self.attn_ffs[i], self.prediction_layers[i]
@@ -614,14 +614,13 @@ class transformer(nn.Module):
             ## attention ff blocks ##
             if i!= 0:
                 pred_scaler = self.pred_scalers[i-1]
-                pred_emb = self.vqs[i-1]._codebook.embed
+                pred_emb = self.vqs[i-1].vq._codebook.embed
                 pred_emb = self.checkpoint(i, l2norm, pred_emb)
                 z = x
                 zsim = self.checkpoint(i, pred_layer, z)
                 zsim = rearrange(zsim, 'b n (h d) -> b h n d', h=self.codebook_heads)
                 zsim = self.checkpoint(i, l2norm, zsim)
                 zsim = self.checkpoint(i, self.einopsfn, zsim, pred_emb, 'b h n d, h v d -> b h n v') * pred_scaler
-                
             else:
                 zsim = self.checkpoint(i, pred_layer, x)
         
@@ -655,10 +654,10 @@ class transformer(nn.Module):
 
                 B, N, D = x.shape
                 vq = self.vqs[i]
-                _,indices,_, ema_data = self.checkpoint(i, vq, x)
+                indices = self.checkpoint(i, vq, x)
 
-                if self.training:
-                    all_ema_data.append(ema_data)
+                '''if self.training:
+                    all_ema_data.append(ema_data)'''
 
                 if len(indices.shape) == 2:
                     indices = rearrange(indices, 'b n -> b n ()') # add dummy head dimension
@@ -686,7 +685,7 @@ class transformer(nn.Module):
             'cache': cached_kvs,
             'lengths': torch.stack(lengths),
             'x_outs': x_outs,
-            'all_ema_data': all_ema_data
+            #'all_ema_data': all_ema_data
         }
 
 
@@ -796,12 +795,12 @@ class transformer_lm(nn.Module):
         
         outputs = self.layers(x, length, cache=cache['layers'] if exists(cache) else None, **kwargs)
 
-        if len(outputs['all_ema_data']) > 0:
+        '''if len(outputs['all_ema_data']) > 0:
             for ix in range(len(outputs['all_ema_data'])):
                 self.layers.vqs[ix]._codebook.update_codebook(
                     bins = outputs['all_ema_data'][ix]['bins'],
                     embed_sum = outputs['all_ema_data'][ix]['embed_sum'],
-                )
+                )'''
 
 
         outputs['targets'][0] = labels.clone() # for the first layer we use ground truth tokens as targets
@@ -857,13 +856,13 @@ class transformer_lm(nn.Module):
             
             outputs = self.layers(curx, curlength, cache=prev_states['layers'] if exists(prev_states) else None, **kwargs)
 
-            if len(outputs['all_ema_data']) > 0:
+            '''if len(outputs['all_ema_data']) > 0:
                 if len(all_ema_data) == 0:
                     all_ema_data = outputs['all_ema_data']
                 else:
                     for ix in range(len(all_ema_data)):
                         all_ema_data[ix]['bins'] += outputs['all_ema_data'][ix]['bins']
-                        all_ema_data[ix]['embed_sum'] += outputs['all_ema_data'][ix]['embed_sum'] 
+                        all_ema_data[ix]['embed_sum'] += outputs['all_ema_data'][ix]['embed_sum'] '''
 
             #finished_indices = (curlength <= 0).nonzero().squeeze(1)
             # get length indices that are not less than/equal to zero (i.e. finished)
@@ -890,12 +889,12 @@ class transformer_lm(nn.Module):
         
         #total_layers_losses[:-1] = total_layers_losses[:-1] * 0.0 # only use the last layer for loss calculation (hehe :)
       
-        if len(all_ema_data) > 0:
+        '''if len(all_ema_data) > 0:
             for ix in range(len(all_ema_data)):
                 self.layers.vqs[ix]._codebook.update_codebook(
                     bins = all_ema_data[ix]['bins'],
                     embed_sum = all_ema_data[ix]['embed_sum'],
-                )
+                )'''
 
         return total_layers_losses
         
