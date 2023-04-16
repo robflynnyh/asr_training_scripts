@@ -203,7 +203,7 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
             token_lens += 1 if using_bos else 0 # add 1 for bos if using
             tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
     
-            l = model(
+            l = model.dev_forward(
                 labels=tokens,
                 length=token_lens,
                 cache=prev_states,
@@ -282,11 +282,23 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 token_lens += 1 if using_bos else 0 # add 1 for bos if using
                 tokens = add_bos(tokens, bos_token_id=0) if using_bos else tokens # add bos only if this is the first sub-batch
 
-                total_sub_batch_loss = model(
+                model.eval()
+                with torch.no_grad():
+                    with ema.average_parameters():
+                        _, ema_targets = model(
+                            labels=tokens,
+                            length=token_lens,
+                            cache=prev_states,
+                            calc_loss=True,
+                        )
+                model.train()
+
+                total_sub_batch_loss, _ = model(
                     labels=tokens,
                     length=token_lens,
                     cache=prev_states,
                     calc_loss=True,
+                    ema_targets=ema_targets,
                 )
 
                 ''''token_len_thing = (outputs['lengths']).sum(-1)
@@ -398,7 +410,7 @@ def main(args):
     }
     train_sampler = Sampler(create_dataset_samples(**train_sample_args), batch_size=args.batch_size, tokenizer=tokenizer, shuffle=True, split_into_splits=400)
 
-    ema = ExponentialMovingAverage(model.parameters(), decay=0.99999) 
+    ema = ExponentialMovingAverage(model.parameters(), decay=0.9995) 
     scaler = GradScaler() if args.mixed_precision else None
 
     run_config = {'run_args': args.__dict__, 'model_config': config, 'total_params': total_params}

@@ -13,6 +13,7 @@ from vector_quantize_pytorch.vector_quantize_pytorch_m import VectorQuantize
 from typing import Optional, Tuple, List, Dict, Union, Callable
 import torch_scatter
 import math
+from batchrenorm import BatchRenorm1d
 
 def exists(val):
     return val is not None
@@ -218,6 +219,21 @@ class PreNorm(nn.Module):
 
     def forward(self, x, *args, **kwargs):
         return self.fn(self.norm(x), *args, **kwargs)
+
+
+
+class PreBatchReNorm(nn.Module):
+    def __init__(self, dim, fn, affine=True):
+        super().__init__()
+        self.norm = BatchRenorm1d(dim, affine=affine)
+        self.fn = fn
+
+    def forward(self, x, *args, **kwargs):
+        x = rearrange(x, 'b n d -> b d n')
+        x = self.norm(x)
+        x = rearrange(x, 'b d n -> b n d')
+        return self.fn(x, *args, **kwargs)
+
 
 class NoGrad(nn.Module):
     def __init__(self, fn):
@@ -436,13 +452,13 @@ class transformer(nn.Module):
         self.halfers = nn.ModuleList([])
 
         self.codebook_dim = 16
-        self.codebook_heads = 8
+        self.codebook_heads = 12
         self.codebook_vocab = 1024
         
         self.vqs = nn.ModuleList([])
             
         self.prediction_layers = nn.ModuleList([])
-        self.pred_scalers = torch.nn.Parameter(torch.ones((depth-1, 1)))
+        self.pred_scalers = torch.nn.Parameter(torch.ones((depth-1, 1))*5.0, requires_grad=True)
 
         self.attn_ffs = nn.ModuleList([])
         for lth in range(depth):
@@ -467,23 +483,12 @@ class transformer(nn.Module):
                         dim = dim,
                         codebook_dim = self.codebook_dim,
                         codebook_size = self.codebook_vocab,
-                        num_codebooks = self.codebook_heads,    
+                        num_codebooks = self.codebook_heads,  
+                        norm = True  
                     )
                 )
-                
-                '''self.vqs.append(
-                    VectorQuantize(
-                        dim=dim,
-                        codebook_size=self.codebook_vocab,
-                        codebook_dim = self.codebook_dim,
-                        use_cosine_sim = True,
-                        decay = 0.8,
-                        separate_codebook_per_head=True,
-                        heads=self.codebook_heads,
-                    )
-                )'''
                 #self.vqs[-1].requires_grad_(False)'''
-                self.halfers.append(PreNorm(dim=dim, fn=Halfer(dim, exp_f=8), elementwise_affine = True))
+                self.halfers.append(PreBatchReNorm(dim=dim, fn=Halfer(dim, exp_f=8), affine = True))
                
 
                 self.halfers[-1].fn.requires_grad_(False)
@@ -767,6 +772,7 @@ class transformer_lm(nn.Module):
     
         if exists(prev_cache):
             assert len(tlm_out['logits']) == len(prev_cache['next_sentence_pred']), 'something went wrong'
+
         for lth in range(len(tlm_out['logits'])):
             logits = tlm_out['logits'][lth]
             targets = tlm_out['targets'][lth]
@@ -802,14 +808,13 @@ class transformer_lm(nn.Module):
                     embed_sum = outputs['all_ema_data'][ix]['embed_sum'],
                 )'''
 
-
         outputs['targets'][0] = labels.clone() # for the first layer we use ground truth tokens as targets
         if calc_loss:
             outputs = self.calc_all_losses(tlm_out=outputs, prev_cache=cache)
    
         return outputs
 
-    def forward(self, labels, length, cache:Dict=None, calc_loss=False, **kwargs):
+    def dev_forward(self, labels, length, cache:Dict=None, calc_loss=False, **kwargs):
         '''
         x: [B, N] (embedding indices)
         length: [B] (length of each sequence)
@@ -879,9 +884,9 @@ class transformer_lm(nn.Module):
             if calc_loss:
                 outputs = self.calc_all_losses(tlm_out=outputs, prev_cache=prev_states)
 
-            total_layer_lengths[:len(outputs['token_losses'])] += outputs['lengths'].sum(-1)[:len(outputs['token_losses'])]
-            total_layers_losses[:len(outputs['token_losses'])] += outputs['token_losses'][:len(outputs['token_losses'])] * outputs['lengths'].sum(-1)[:len(outputs['token_losses'])]
-            
+                total_layer_lengths[:len(outputs['token_losses'])] += outputs['lengths'].sum(-1)[:len(outputs['token_losses'])]
+                total_layers_losses[:len(outputs['token_losses'])] += outputs['token_losses'][:len(outputs['token_losses'])] * outputs['lengths'].sum(-1)[:len(outputs['token_losses'])]
+                
             prev_states = outputs['cache']
 
         #print(total_layer_lengths, outputs['lengths'].sum(-1))
@@ -897,4 +902,98 @@ class transformer_lm(nn.Module):
                 )'''
 
         return total_layers_losses
+
+    def forward(self, labels, length, cache:Dict=None, calc_loss=False, ema_targets=None, **kwargs):
+        '''
+        x: [B, N] (embedding indices)
+        length: [B] (length of each sequence)
+        cache: {cache_lengths: [B, N], cache: [L, KV, B, H, N, D]} KV: key and value (2)
+        '''
+        assert labels.shape[1] == length.max(), 'sequence length should be equal to the length of the longest sequence!'
+        total_layer_lengths = torch.zeros(self.layers.depth, device=labels.device)
+        total_layers_losses = torch.zeros(self.layers.depth, device=labels.device)
+
+        x = self.layers.embedding(labels)
+        x = self.abs_pos(x) 
+
+        subsize = (2 ** (self.layers.depth - 1)) * 3
+        B, N, D = x.shape
+        substeps = math.ceil(N / subsize)
+        remaining_length = length.clone()
+        all_outputs = []
+        prev_x, prev_labels = [x], [labels]
+        
+        prev_states = cache
+
+        iteration_targets = []
+
+
+        for i in range(substeps):
+            
+            if exists(prev_states):
+                for ix in range(len(prev_states['layers'])):
+                    inner_depth = self.layers.inner_depth 
+                    #c_ix = ix + inner_depth if ix < len(prev_states['layers']) - inner_depth else len(prev_states['layers']) - 1
+                    c_ix = ix
+                    prev_states['layers'][ix]['cache'] = prev_states['layers'][c_ix]['cache'][:,:,unfinished_indices]
+                    prev_states['layers'][ix]['cache_lengths'] = prev_states['layers'][c_ix]['cache_lengths'][unfinished_indices]
+
+                for ix in range(len(prev_states['next_sentence_pred'])):
+                    prev_states['next_sentence_pred'][ix] = prev_states['next_sentence_pred'][ix][unfinished_indices]
+
+            #print(f'step {i} of {substeps} ({i/substeps*100:.2f}%)')
+            curx = x[:, i*subsize:(i+1)*subsize].clone().contiguous()
+            curlabels = labels[:, i*subsize:(i+1)*subsize].clone().contiguous()
+            curlength = remaining_length.clone()
+            curlength[curlength > subsize] = subsize
+            remaining_length -= subsize
+            
+            outputs = self.layers(curx, curlength, cache=prev_states['layers'] if exists(prev_states) else None, **kwargs)
+
+            '''if len(outputs['all_ema_data']) > 0:
+                if len(all_ema_data) == 0:
+                    all_ema_data = outputs['all_ema_data']
+                else:
+                    for ix in range(len(all_ema_data)):
+                        all_ema_data[ix]['bins'] += outputs['all_ema_data'][ix]['bins']
+                        all_ema_data[ix]['embed_sum'] += outputs['all_ema_data'][ix]['embed_sum'] '''
+
+            #finished_indices = (curlength <= 0).nonzero().squeeze(1)
+            # get length indices that are not less than/equal to zero (i.e. finished)
+            unfinished_indices = (remaining_length > 0).nonzero().squeeze(1)
+            finished_indices = (curlength <= 0).nonzero().squeeze(1)
+            #print(f'finished: {len(finished_indices)}')
+         
+            x = x[unfinished_indices]
+            labels = labels[unfinished_indices]
+            remaining_length = remaining_length[unfinished_indices]
+            length = length[unfinished_indices]
+
+            outputs['targets'][0] = curlabels.clone() # for the first layer we use ground truth tokens as targets
+
+            if ema_targets is None:
+                iteration_targets.append(outputs['targets'])
+
+            if calc_loss and ema_targets is not None:
+                outputs['targets'] = ema_targets[i]
+                outputs = self.calc_all_losses(tlm_out=outputs, prev_cache=prev_states)
+
+                total_layer_lengths[:len(outputs['token_losses'])] += outputs['lengths'].sum(-1)[:len(outputs['token_losses'])]
+                total_layers_losses[:len(outputs['token_losses'])] += outputs['token_losses'][:len(outputs['token_losses'])] * outputs['lengths'].sum(-1)[:len(outputs['token_losses'])]
+                
+            prev_states = outputs['cache']
+
+        #print(total_layer_lengths, outputs['lengths'].sum(-1))
+        total_layers_losses /= (total_layer_lengths + 1e-8)
+        
+        #total_layers_losses[:-1] = total_layers_losses[:-1] * 0.0 # only use the last layer for loss calculation (hehe :)
+      
+        '''if len(all_ema_data) > 0:
+            for ix in range(len(all_ema_data)):
+                self.layers.vqs[ix]._codebook.update_codebook(
+                    bins = all_ema_data[ix]['bins'],
+                    embed_sum = all_ema_data[ix]['embed_sum'],
+                )'''
+
+        return total_layers_losses, iteration_targets
         
