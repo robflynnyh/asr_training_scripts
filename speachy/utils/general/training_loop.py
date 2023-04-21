@@ -1,19 +1,21 @@
 import torch, torch_optimizer
 from torch.optim.lr_scheduler import CyclicLR
 from speachy.utils.general.model_utils import load_schedular_data
-
+from ranger.ranger2020 import Ranger # https://github.com/lessw2020/Ranger-Deep-Learning-Optimizer/blob/master/ranger/ranger2020.py
 
 def optimizer(model, args):
-    implemented_optimizers = ['adamw','madgrad', 'novograd', 'ranger']
+    implemented_optimizers = ['adamw', 'adam', 'madgrad', 'novograd', 'ranger']
     weight_decay = 1e-6 if 'weight_decay' not in args else args.weight_decay
     if args.optimizer_type == 'adamw':
         optimizer = torch.optim.AdamW(model.parameters(), betas=(0.9, 0.98), weight_decay=weight_decay, lr=args.min_lr)
+    elif args.optimizer_type == 'adam':
+        optimizer = torch.optim.Adam(model.parameters(), betas=(0.9, 0.98), weight_decay=weight_decay, lr=args.min_lr)
     elif args.optimizer_type == 'madgrad':
         optimizer = torch_optimizer.MADGRAD(model.parameters(), lr=args.min_lr, momentum=0.9, weight_decay=weight_decay, eps=1e-6)
     elif args.optimizer_type == 'novograd':
         optimizer = torch_optimizer.NovoGrad(model.parameters(), lr= args.min_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, grad_averaging=False, amsgrad=False,)
     elif args.optimizer_type == 'ranger':
-        optimizer = torch_optimizer.Ranger(model.parameters(), lr=args.min_lr)
+        optimizer = Ranger(model.parameters(), lr = args.min_lr, weight_decay = weight_decay, use_gc = True)
     else:
         raise ValueError(f'Unknown optimizer type: {args.optimizer_type}, implemented optimizers: {implemented_optimizers}')
 

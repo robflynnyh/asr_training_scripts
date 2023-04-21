@@ -228,10 +228,12 @@ class PreBatchReNorm(nn.Module):
         self.norm = BatchRenorm1d(dim, affine=affine)
         self.fn = fn
 
-    def forward(self, x, *args, **kwargs):
+    def forward(self, x, mask, *args, **kwargs):
         x = rearrange(x, 'b n d -> b d n')
-        x = self.norm(x)
+        x = self.norm(x, mask=mask)
         x = rearrange(x, 'b d n -> b n d')
+        if mask is not None:
+            x = x.masked_fill(mask[:,:,None], 0) 
         return self.fn(x, *args, **kwargs)
 
 
@@ -451,9 +453,9 @@ class transformer(nn.Module):
 
         self.halfers = nn.ModuleList([])
 
-        self.codebook_dim = 16
-        self.codebook_heads = 16
-        self.codebook_vocab = 128
+        self.codebook_dim = 512
+        self.codebook_heads = 2
+        self.codebook_vocab = 256
         
         self.vqs = nn.ModuleList([])
             
@@ -484,13 +486,16 @@ class transformer(nn.Module):
                         codebook_size=self.codebook_vocab,
                         codebook_dim = self.codebook_dim,
                         use_cosine_sim = True,
-                        decay = 0.8,
+                        decay = 0.999,
+                        threshold_ema_dead_code = 0.1,
                         separate_codebook_per_head=True,
                         heads=self.codebook_heads,
-                        threshold_ema_dead_code=0.001
+                        commitment_weight=0.0
                     )
                 )
-                self.vqs[-1].requires_grad_(False)
+                self.vqs[-1].project_in.requires_grad_(False)
+                self.vqs[-1].project_out.requires_grad_(False)
+
                 '''RandomProjectionQuantizer(
                     dim = dim,
                     codebook_dim = self.codebook_dim,
@@ -499,8 +504,8 @@ class transformer(nn.Module):
                     norm = True  
                 )'''
                 #self.vqs[-1].requires_grad_(False)'''
-                self.halfers.append(PreBatchReNorm(dim=dim, fn=Halfer(dim, exp_f=8), affine = True))
-                self.halfers[-1].fn.requires_grad_(False)
+                self.halfers.append(PreBatchReNorm(dim=dim, fn=Halfer(dim, exp_f=4), affine = True))
+                #self.halfers[-1].fn.requires_grad_(False)
 
         self.einopsfn = EinopsFn()
     
@@ -573,24 +578,6 @@ class transformer(nn.Module):
         return q_mask, attn_mask, total_len, x_len, cache_len, pos_bias
 
 
-    def next_token_mse_loss(self, x, y, length):
-        '''minimise MSE between each x_t and y_t+1'''
-        B,N,D = x.shape
-        y = y[:,1:].clone()
-        x = x[:,:-1].clone()
-        # mask that is shifted for next token prediction
-        mask = torch.arange(N-1, device=x.device).expand(B,-1) >= length[:,None] -2 # -2 bcos -1 for N-1 arange and -1 for shifted mask
-        x = l2norm(x, groups=8)
-        y = l2norm(y, groups=8)
-        loss = self.checkpoint(0, self.einopsfn, x, y, 'b n d, b n d -> b n')
-        loss = (-1) * loss # maximise similarity
-        loss = loss + 8 # shift so that loss is positive (number of groups)
-        
-        loss = loss.masked_fill(mask, 0)
-        loss = loss.sum() / (~mask).sum()
-        if torch.isnan(loss): # empty sequence
-            loss = torch.tensor(0, device=x.device, dtype=x.dtype)
-        return loss 
 
 
 
@@ -598,6 +585,7 @@ class transformer(nn.Module):
         
         intermediate_logits = []
         next_token_preds = []
+        last_token_latents = []
         
         intermediate_targets = [None] # for the first layer we use ground truth tokens as targets
         cache_lengths = []
@@ -608,6 +596,8 @@ class transformer(nn.Module):
         quantized_latents = []
         predictions = []
         next_token_preds_mse = []
+        
+        orth_loss = []
 
         all_ema_data = []
  
@@ -623,8 +613,7 @@ class transformer(nn.Module):
         for i in range(self.depth):
             attn_ff, pred_layer = self.attn_ffs[i], self.prediction_layers[i]
 
-            ## attention ff blocks ##
-            
+            ## attention ff blocks ##            
             attn_cache = [cache[ix]['cache'][0] if exists(cache) else None for ix in range(i*self.inner_depth, i*self.inner_depth+self.inner_depth)] 
             x, kvs = self.checkpoint(i, attn_ff, x, pos_bias, attn_mask, attn_cache, cache_indices)
     
@@ -639,8 +628,7 @@ class transformer(nn.Module):
             else:
                 zsim = self.checkpoint(i, pred_layer, x)
                 intermediate_logits.append(zsim)
-            clen = length.clone()
-            ntp = grab_last_token(zsim, clen)   
+            ntp = grab_last_token(zsim, length)   
             if i==0:
                 next_token_preds.append(ntp)
             else:
@@ -649,9 +637,8 @@ class transformer(nn.Module):
 
             if i != self.depth-1:
                 halfer = self.halfers[i]
-                x, length = self.checkpoint(i, halfer, x, length)
-                x_outs.append(x)
-                xbelow = x.clone()
+                x, length = self.checkpoint(i, halfer, x, mask, length)
+                x_outs.append(x.detach())
                 lengths.append(length.clone())
                 
                 
@@ -659,19 +646,19 @@ class transformer(nn.Module):
                 mask, attn_mask, total_lens, x_len, cache_len, pos_bias = self.create_masks_and_positions(x, length, curcache)
                 cache_indices = self.get_cache_indices(x_len, cache_len, curcache['cache'], x) if exists(curcache) else None
 
-
                 B, N, D = x.shape
                 vq = self.vqs[i]
                 
-                qv, indices, _, ema_data = self.checkpoint(i, vq, x)
+                qv, indices, vq_loss, ema_data = self.checkpoint(i, vq, x, mask)
                 if self.training:
                     all_ema_data.append(ema_data)
+                    orth_loss.append(vq_loss)
                
                 quantized_latents.append(qv.detach())
+                last_token_latents.append(grab_last_token(qv.detach(), length))
 
         #orth_loss = orthogonal_loss_fn(pred_matrix)
         #commitment_loss =  orth_loss.sum() * 10.0 
-        
 
         #print(len(cached_kvs), len(layer_below_next_token_preds), len(cache_lengths), len(next_token_preds))
         assert len(cached_kvs) == len(cache_lengths), 'something went wrong'
@@ -683,11 +670,6 @@ class transformer(nn.Module):
             'next_sentence_pred_mse': next_token_preds_mse,
         }
         
-        '''# shift layers down list down by 1 
-        print(len(cached_kvs['layers']))
-        cached_kvs['layers'] = cached_kvs['layers'][self.inner_depth:] + [cached_kvs['layers'][-1]]*self.inner_depth
-        print(len(cached_kvs['layers']))'''
-
         
         return {
             'logits': intermediate_logits,
@@ -696,8 +678,10 @@ class transformer(nn.Module):
             'lengths': torch.stack(lengths),
             'x_outs': x_outs,
             'quantized_latents': quantized_latents,
+            'last_token_latents': last_token_latents,
             'predictions': predictions,
             'all_ema_data': all_ema_data,
+            'orth_loss': torch.tensor(orth_loss) if len(orth_loss) > 0 else torch.tensor([0.]),
         }
 
 
@@ -738,7 +722,7 @@ class transformer_lm(nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
    
-    def calc_all_losses(self, tlm_out, prev_cache):
+    def calc_all_losses(self, tlm_out, prev_cache, last_qlatents=None):
         eos_id = -100
         loss_fn = lambda l, t: F.cross_entropy(rearrange(l, 'b n c -> b c n'), t, ignore_index=-100, reduction='mean')
         losses = []
@@ -776,28 +760,35 @@ class transformer_lm(nn.Module):
             
             return loss
 
-        def calc_latents_mse_loss(predictions, latents, lengths, first_token_pred):
+        def calc_latents_mse_loss(predictions, latents, lengths, first_token_pred, last_token_latents):
             '''minimise mse between prediction from x_t and latent at t+1'''
             if lengths.max() == 1 and not exists(first_token_pred):
                 return None
             if exists(first_token_pred):
                 predictions = torch.cat([first_token_pred, predictions], dim=1) # cat zero vect to end of latents
-                latents = torch.cat([latents, torch.zeros(latents.size(0), 1, latents.size(2), device=latents.device)], dim=1)
+                latent_negatives = torch.cat([last_token_latents, latents], dim=1) # cat zero vect to end of latents
+                latents_targets = torch.cat([latents, torch.zeros(latents.size(0), 1, latents.size(2), device=latents.device)], dim=1)
                 lengths += 1
             else:
                 predictions = predictions[:,:-1] # remove last prediction as no latent to predict
-                latents = latents[:,1:] # remove first latent as no prediction to predict it
+                latent_negatives = latents[:,:-1].clone() # remove last latent as no prediction to predict it
+                latents_targets = latents[:,1:].clone() # remove first latent as no prediction to predict it
             B, N, D = predictions.shape
             mask = torch.arange(N, device=predictions.device).expand(B, N) >= lengths.unsqueeze(1) - 1
             predictions = l2norm(predictions, dim=-1)
-            latents = l2norm(latents, dim=-1)
-            mse = F.mse_loss(predictions, latents, reduction='none')
-            '''mse = self.layers.checkpoint(0, self.layers.einopsfn, predictions, latents, 'b n d, b n d -> b n')
-            mse = (-1) * mse # maximise similarity
-            mse = mse + 8 # shift so that loss is positive (number of groups)'''
-           
-            #mse = F.mse_loss(predictions, latents, reduction='none')
-            mse = mse.masked_fill(mask[:,:,None], 0.) # mask out padded elements
+            latents_targets = l2norm(latents_targets, dim=-1)
+            latent_negatives = l2norm(latent_negatives, dim=-1)
+    
+       
+            mse = F.mse_loss(predictions, latents_targets, reduction='none').sum(-1)
+            '''if self.training:
+                mse_neg = F.mse_loss(predictions, latent_negatives, reduction='none').sum(-1)
+                mse_diff = mse - mse_neg 
+                mse_diff[mse_diff < 0] = 0
+                r_mse_diff = mse - (mse_neg / 8)
+                mse = r_mse_diff + 0.5 # bound
+                #mse[mse_diff > 0] = r_mse_diff[mse_diff > 0] + 0.5 # bound'''
+
             mse = mse.sum() / (~mask).sum() # average over non-masked elements
             if torch.isnan(mse):
                 mse = torch.tensor(0., device=predictions.device, dtype=predictions.dtype)
@@ -825,8 +816,10 @@ class transformer_lm(nn.Module):
             latents = tlm_out['quantized_latents'][lth]
             
             next_token_preds = prev_cache['next_sentence_pred_mse'][lth] if exists(prev_cache) else None
+            last_token_latents = last_qlatents[lth] if exists(next_token_preds) else None
+
             lengths = tlm_out['lengths'][lth+1] # +1 because 1st layer is normal targets
-            loss = calc_latents_mse_loss(predictions=predictions, latents=latents, lengths=lengths, first_token_pred=next_token_preds)
+            loss = calc_latents_mse_loss(predictions=predictions, latents=latents, lengths=lengths, first_token_pred=next_token_preds, last_token_latents=last_token_latents)
             if exists(loss):
                 losses.append(loss)
             #print(predictions.shape, latents.shape, lengths.shape, next_token_preds.shape if exists(next_token_preds) else None)
@@ -850,6 +843,8 @@ class transformer_lm(nn.Module):
 
         outputs['targets'][0] = labels.clone() # for the first layer we use ground truth tokens as targets
         if calc_loss:
+            if exists(cache):
+                print('not set up to work properly with, cache as qlatents arent stored (to implement)')
             outputs = self.calc_all_losses(tlm_out=outputs, prev_cache=cache)
    
         return outputs
@@ -889,6 +884,8 @@ class transformer_lm(nn.Module):
                     prev_states['next_sentence_pred'][ix] = prev_states['next_sentence_pred'][ix][unfinished_indices]
                 for ix in range(len(prev_states['next_sentence_pred_mse'])):
                     prev_states['next_sentence_pred_mse'][ix] = prev_states['next_sentence_pred_mse'][ix][unfinished_indices]
+                for ix in range(len(prev_states['last_token_latents'])):
+                    prev_states['last_token_latents'][ix] = prev_states['last_token_latents'][ix][unfinished_indices]
 
             #print(f'step {i} of {substeps} ({i/substeps*100:.2f}%)')
             curx = x[:, i*subsize:(i+1)*subsize].clone().contiguous()
@@ -908,12 +905,14 @@ class transformer_lm(nn.Module):
 
             outputs['targets'][0] = curlabels.clone() # for the first layer we use ground truth tokens as targets
             if calc_loss:
-                outputs = self.calc_all_losses(tlm_out=outputs, prev_cache=prev_states)
+                last_token_qlatents = prev_states['last_token_latents'] if exists(prev_states) else None
+                outputs = self.calc_all_losses(tlm_out=outputs, prev_cache=prev_states, last_qlatents=last_token_qlatents)
 
                 total_layer_lengths[:len(outputs['token_losses'])] += outputs['lengths'].sum(-1)[:len(outputs['token_losses'])]
                 total_layers_losses[:len(outputs['token_losses'])] += outputs['token_losses'][:len(outputs['token_losses'])] * outputs['lengths'].sum(-1)[:len(outputs['token_losses'])]
                 
             prev_states = outputs['cache']
+            prev_states['last_token_latents'] = outputs['last_token_latents']
 
         #print(total_layer_lengths, outputs['lengths'].sum(-1))
         total_layers_losses /= (total_layer_lengths + 1e-8)
@@ -948,6 +947,7 @@ class transformer_lm(nn.Module):
 
         all_ema_data = []
 
+        all_orth_loss = []
 
         for i in range(substeps):
             
@@ -959,6 +959,9 @@ class transformer_lm(nn.Module):
                     prev_states['next_sentence_pred'][ix] = prev_states['next_sentence_pred'][ix][unfinished_indices]
                 for ix in range(len(prev_states['next_sentence_pred_mse'])):
                     prev_states['next_sentence_pred_mse'][ix] = prev_states['next_sentence_pred_mse'][ix][unfinished_indices]
+                if ema_targets is None:
+                    for ix in range(len(iteration_targets[i-1]['last_token_qlatents'])):
+                        iteration_targets[i-1]['last_token_qlatents'][ix] = iteration_targets[i-1]['last_token_qlatents'][ix][unfinished_indices]
 
             #print(f'step {i} of {substeps} ({i/substeps*100:.2f}%)')
             curx = x[:, i*subsize:(i+1)*subsize].clone().contiguous()
@@ -968,6 +971,8 @@ class transformer_lm(nn.Module):
             remaining_length -= subsize
             
             outputs = self.layers(curx, curlength, cache=prev_states['layers'] if exists(prev_states) else None, **kwargs)
+
+            all_orth_loss.append(outputs['orth_loss'].mean())
 
             if len(outputs['all_ema_data']) > 0:
                 if len(all_ema_data) == 0:
@@ -987,15 +992,21 @@ class transformer_lm(nn.Module):
             outputs['targets'][0] = curlabels.clone() # for the first layer we use ground truth tokens as targets
 
             if ema_targets is None:
-                iteration_targets.append(outputs['quantized_latents'])
+                iteration_targets.append({
+                    'quantized_latents': outputs['quantized_latents'],
+                    'last_token_qlatents': outputs['last_token_latents'],
+                })
 
             if calc_loss and ema_targets is not None:
-                outputs['quantized_latents'] = ema_targets[i]
-                outputs = self.calc_all_losses(tlm_out=outputs, prev_cache=prev_states)
+                outputs['quantized_latents'] = ema_targets[i]['quantized_latents']
+                last_token_qlatents = ema_targets[i-1]['last_token_qlatents'] if i > 0 else None
+                outputs = self.calc_all_losses(tlm_out=outputs, prev_cache=prev_states, last_qlatents=last_token_qlatents)
 
                 total_layer_lengths[:len(outputs['token_losses'])] += outputs['lengths'].sum(-1)[:len(outputs['token_losses'])]
                 total_layers_losses[:len(outputs['token_losses'])] += outputs['token_losses'][:len(outputs['token_losses'])] * outputs['lengths'].sum(-1)[:len(outputs['token_losses'])]
-                
+            elif calc_loss:
+                print('EMA TARGETS NOT PROVIDED, NEEDED FOR TRAINING')  
+                raise Exception  
             prev_states = outputs['cache']
 
         total_layers_losses /= (total_layer_lengths + 1e-8)
@@ -1007,6 +1018,7 @@ class transformer_lm(nn.Module):
                     embed_sum = all_ema_data[ix]['embed_sum'],
                 )
 
+        all_orth_loss = torch.tensor(all_orth_loss).mean()
 
-        return total_layers_losses, iteration_targets
+        return total_layers_losses, iteration_targets, all_orth_loss
         

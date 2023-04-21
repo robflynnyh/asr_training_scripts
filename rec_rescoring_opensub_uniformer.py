@@ -218,7 +218,8 @@ def validate_one_epoch(args, model, val_dataloader, device, sanity_check=False):
             prev_states = outputs['cache']'''
 
         #l = (total_sub_batch_loss / total_sub_batch_lengths)
-        l = l.mean()
+        #l = (l[:-1].mean() + l[-1]) / 2 if len(l) > 1 else l[0]
+        l = l[-1]
         losses.append(l.item())
 
         if sanity_check:
@@ -285,7 +286,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 model.eval()
                 with torch.no_grad():
                     with ema.average_parameters():
-                        _, ema_targets = model(
+                        _, ema_targets, _ = model(
                             labels=tokens,
                             length=token_lens,
                             cache=prev_states,
@@ -293,7 +294,7 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                         )
                 model.train()
 
-                total_sub_batch_loss, _ = model(
+                total_sub_batch_loss, _, orth_loss = model(
                     labels=tokens,
                     length=token_lens,
                     cache=prev_states,
@@ -322,11 +323,12 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
         per_layer_loss = {f'loss_layer_{i}': total_sub_batch_loss[i].item() for i in range(len(total_sub_batch_loss))}
         
         #per_layer_loss_ntmse = {f'loss_ntmse_layer_{i}': total_ntmseloss[i].item() for i in range(len(total_ntmseloss))}
-        
-
-        total_sub_batch_loss = total_sub_batch_loss.mean()
+        orth_loss_display = {f'orth_loss': orth_loss.item()}
+        #l = (l[:-1].mean() + l[-1]) / 2 if len(l) > 1 else l[0]
+        total_sub_batch_loss = total_sub_batch_loss[-1]
+        #total_sub_batch_loss = (total_sub_batch_loss[:-1].mean() + total_sub_batch_loss[-1]) / 2 if len(total_sub_batch_loss) > 1 else total_sub_batch_loss[0]
         total_sub_batch_loss_todisplay = total_sub_batch_loss.item()
-        total_sub_batch_loss = total_sub_batch_loss #+ total_ntmseloss.mean() + total_sub_batch_commit_loss
+        total_sub_batch_loss = total_sub_batch_loss # + orth_loss
     
         #total_sub_batch_commit_loss = sum(total_sub_batch_commit_loss) / len(total_sub_batch_commit_loss)
     
@@ -353,7 +355,6 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
                 'train_loss': total_sub_batch_loss_todisplay,
                 'lrate': cur_lr,
                 'epoch': epoch, 
-                **per_layer_loss,
             })
             
     loss_end = sum(losses) / len(losses)
@@ -363,9 +364,9 @@ def train_one_epoch(args, epoch, model, optim, schedular, train_dataloader, devi
     torch.cuda.empty_cache()
     return loss_end
 
-
 def load_csv(path): 
-    return pd.read_csv(path, low_memory=False, nrows=10000000)
+    return pd.read_csv(path, low_memory=False)
+
 
 def main(args):
 
@@ -410,7 +411,7 @@ def main(args):
     }
     train_sampler = Sampler(create_dataset_samples(**train_sample_args), batch_size=args.batch_size, tokenizer=tokenizer, shuffle=True, split_into_splits=400)
 
-    ema = ExponentialMovingAverage(model.parameters(), decay=0.9995) 
+    ema = ExponentialMovingAverage(model.parameters(), decay=0.999) 
     scaler = GradScaler() if args.mixed_precision else None
 
     run_config = {'run_args': args.__dict__, 'model_config': config, 'total_params': total_params}
