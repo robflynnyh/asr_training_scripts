@@ -5,6 +5,7 @@
 *.trn.*
 *.trn
 *.model
+*.manifest
 *.npy
 *.log
 *.arpa
@@ -17,4 +18,6 @@ wandb/
 wandb/*
 */wandb/ 
 
+chapterbreak/eval_data/*
+chapterbreak/create_tokenizer/*
 

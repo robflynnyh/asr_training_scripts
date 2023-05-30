@@ -1,11 +1,18 @@
 import torch, torch.nn as nn, torch.nn.functional as F
 import numpy as np
 from einops import rearrange, repeat
+import einops
 from torch import einsum
 from torch.utils.checkpoint import checkpoint # # gradient/activation checkpointing
+from speachy.lm.tools.train import add_eos, token_lens_to_mask, mark_padding
 from functools import partial
 import string
 from typing import Optional, Tuple, List, Dict, Union, Callable
+import math
+import random
+
+from batchrenorm import BatchRenorm1d
+
 
 def exists(val):
     return val is not None
@@ -139,8 +146,6 @@ class CosineAttention(nn.Module):
             self._head_proj_post = nn.Conv2d(n_heads, n_heads, (1, 1))
             
 
-        self.temperature = torch.nn.Parameter(torch.tensor(temperature), requires_grad=True) if isinstance(temperature, float) else temperature
-
         self.activation = ReLUSquared() if activation == 'relusq' else nn.Softmax(dim=-1)
 
         if not self.shared_kv:
@@ -161,40 +166,35 @@ class CosineAttention(nn.Module):
         return dots      
   
 
-    def attend(self, query, key, value, attn_mask, pos_bias):
-        query, key = map(l2norm, (query, key))
-        
-        dots = einsum('bhid,bhjd->bhij', query, key) * self.temperature
+    def attend(self, query, key, value):
+        dots = einsum('bhid,bhjd->bhij', query, key) * self.head_dim ** -0.5
         dots = self.head_proj(dots, mode='pre')
 
-        dots += pos_bias
-
-        dots.masked_fill_(attn_mask, -torch.finfo(dots.dtype).max)
+        #dots.masked_fill_(attn_mask, -torch.finfo(dots.dtype).max)
 
         attn = self.activation(dots)
         attn = self.head_proj(attn, mode='post')
+
      
         attn = self.dropout(attn)
         return einsum("bhij,bhjd->bhid", attn, value)
 
     @staticmethod
-    def attach_cache(kv, cache, cache_indices):
+    def attach_cache(kv, cache):
         kv = torch.stack(kv, dim=0)
         if cache is None:
             return kv
-        zero_vector = torch.zeros_like(kv[:, :, :, :1, :])
-        kv_w_cache = torch.cat([cache, kv, zero_vector], dim=-2)
-        kv_w_cache = torch.gather(kv_w_cache, dim=-2, index=cache_indices) # we do this to remove unnecessary padding
-        return kv_w_cache
+        kv_cache = torch.cat([cache, kv], dim=-2)
+        return kv_cache
 
-    def forward(self, x, pos_bias, mask, cache=None, cache_indices=None):
+    def forward(self, x, cache=None):
         B, N, C, H, D = *x.shape, self.n_heads, self.head_dim
     
         q, k, v  = self.qkv(x)
-        kv = self.attach_cache([k, v], cache, cache_indices)
+        kv = self.attach_cache([k, v], cache)
         k, v = kv
 
-        out = self.attend(q, k, v, mask, pos_bias)
+        out = self.attend(q, k, v)
 
         out = rearrange(out, "b h n d -> b n (h d)")
         out = self.out_proj(out)
@@ -220,7 +220,31 @@ class GLU(nn.Module):
         x, gate = self.proj(x).chunk(2, dim = -1)
         return x * self.act(gate)
 
+'''class CacheProjection(nn.Module):
+    def __init__(self, depth):
+        super().__init__()
+        self.weight = nn.Parameter(torch.randn(depth, depth))
 
+    def forward(self, x_in):
+        l, kv, b, h, n, d = x_in.shape
+        weight = self.weight.softmax(dim=-1)
+        x_in = rearrange(x_in, "l kv b h n d -> l () kv b h n d")
+        weighted = einsum('lokbhnd,lz->lkbhnd', x_in, weight)
+        return weighted'''
+
+class CacheProjection(nn.Module):
+    def __init__(self, dim, exp=2):
+        super().__init__()
+        self.linear = nn.Linear(dim, dim * exp * 2)
+        self.act = nn.SiLU()
+        self.out_proj = nn.Linear(dim * exp, dim)
+
+    def forward(self, x_in):
+        x = self.linear(x_in)
+        a, b = x.chunk(2, dim=-1)
+        x = self.act(a) * b
+        x = self.out_proj(x)
+        return x
 
 class transformer(nn.Module):
     def __init__(
@@ -247,19 +271,17 @@ class transformer(nn.Module):
         self.causal = causal
 
         self.temperature = nn.Parameter(torch.tensor(temperature), requires_grad=True) if shared_temperture else temperature
-    
+        #L, KV, B, H, N, D
+        
+
+        #self.cache_projection = nn.Linear(dim_head * depth, dim_head * depth)
+        self.cache_projection = PreNorm(dim_head*depth, CacheProjection(dim=dim_head*depth))
 
         self.intermediate_loss = intermediate_loss
 
         self.depth = depth
-        self.positional_bias = DynamicPositionBias(
-            dim = dim // 4,
-            heads = heads,
-            depth = 2,
-            log_distance = False,
-            norm = False,
-            activation = nn.ReLU, # or silu
-        )
+        self.shared_kv = kwargs.get('shared_kv', False)
+        self.heads = heads
 
         self.token_shifter = lambda x: x
         if self.token_shift:
@@ -267,6 +289,7 @@ class transformer(nn.Module):
         self.token_shift = lambda x: self.token_shifter(x)
 
         self.layers = nn.ModuleList([])
+        self.dim_head = dim_head
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
                 PreNorm(dim, CosineAttention(
@@ -300,86 +323,46 @@ class transformer(nn.Module):
         return checkpoint(self.create_custom_forward(module), *args, **kwargs) if condition else module(*args, **kwargs)
 
     @staticmethod
-    def get_cache(cache, layer):
+    def get_cache(cache, i):
         if cache is None:
             return None
-        return cache['cache'][layer]
+        return cache['cache'][i]
 
-    @staticmethod
-    def get_cache_indices(x_lens, cache_lens, cache_kv, x):  
-        # used later w/ gather to remove padding when cache is concatenated with current input to remove padding
-        max_new_len = (x_lens + cache_lens).max()
-        # cache kv =  LAYERS, KEYS+VALUES (2), BATCH, HEADS, N, DIM
-        B, H, N, D = x.shape[0], cache_kv.shape[-3], (x.shape[1] + cache_kv.shape[-2]), cache_kv.shape[-1]
-        indices = []
-        for i in range(B): # stinky for loop to sort out indices for gather 
-            cache_indices = torch.arange(cache_lens[i], device='cpu')
-            total_length = cache_lens[i] + x_lens[i] 
-            diff_from_max_len = max_new_len - total_length
-            x_indices = torch.arange(x_lens[i]+diff_from_max_len, device='cpu') + cache_kv.shape[-2]
-            if diff_from_max_len > 0:
-                x_indices[-diff_from_max_len:] = N  # last index will be used for padding
-            new_indices = torch.cat([cache_indices, x_indices])
-            indices.append(new_indices)
 
-        indices = torch.stack(indices, dim=0)
-        
-        indices = rearrange(indices, 'b n -> () b () n ()').expand(2, B, H,-1, D) # 2 for key and value
-        return indices.to(x.device)
-
-    def create_masks_and_positions(self, x, length, cache): 
-        x_len = length if length is not None else torch.tensor(x.shape[-2]).expand(x.shape[0])
-        cache_len = cache['cache_lengths'] if exists(cache) else 0
-        total_len = x_len + cache_len
-        kv_mask = torch.arange(total_len.max(), device=x.device).expand(len(total_len), -1) >= total_len.unsqueeze(-1)
-        q_mask = torch.arange(x_len.max(), device=x.device).expand(len(x_len), -1) >= x_len.unsqueeze(-1)
-        attn_mask = ~(rearrange(~q_mask, "b n -> b () n ()") * rearrange(~kv_mask, "b n -> b () () n"))
-        ##
-        ##
-        causal_mask = repeat(torch.arange(total_len.max(), device=x.device), 'i -> b r i', b=len(total_len), r=x_len.max())
-        cache_offset = cache_len[:,None,None] if exists(cache) else cache_len
-        diagonal_offset = torch.arange(x_len.max(), device=x.device)[None,:,None]
-        ##
-        ## positional stuff ##
-        positional_grid = (causal_mask - cache_offset - diagonal_offset) * -1
-        pos = torch.arange(positional_grid.min(), positional_grid.max()+1, device=x.device, dtype=x.dtype)[:,None]
-        min_cache_len = 0 if cache_len.__class__ == int else cache_len.min()
-        positional_indices = ((positional_grid) + (total_len.max() - min_cache_len - 1)) # shift so zero is the smallest number
-        pos_bias = self.positional_bias(pos=pos, indices=positional_indices, dtype=x.dtype, device=x.device)
-        ## positional stuff ##
-        ##
-        if self.causal:
-            causal_mask = causal_mask >= (cache_offset + diagonal_offset + 1)
-            attn_mask = torch.logical_or(attn_mask, causal_mask[:,None])
-        ##
-        return q_mask, attn_mask, total_len, x_len, cache_len, pos_bias
 
 
     def forward(self, x, length=None, self_condtioning=None, cache=None, **kwargs):
+        B,N,D = x.shape
         intermediate_logits = []
         cached_kvs = []
+  
+        o_cache = cache['cache'].clone() if exists(cache) else None
+        heads = self.heads if not self.shared_kv else 1
 
-        mask, attn_mask, total_lens, x_len, cache_len, pos_bias = self.create_masks_and_positions(x, length, cache)
-    
-        cache_indices = self.get_cache_indices(x_len, cache_len, cache['cache'], x) if exists(cache) else None
-    
+        kv_stack = []
         for i, (attn, ff) in enumerate(self.layers):
 
             x = self.token_shift(x)
-            a_out, kv = self.checkpoint(i, attn, x, pos_bias, attn_mask, self.get_cache(cache, layer=i), cache_indices)
+            a_out, kv = self.checkpoint(i, attn, x, self.get_cache(cache, i))
             x = a_out + x
-            cached_kvs.append(kv)
+
+            kv_stack.append(kv[:,:,:,-1,None])
+ 
             x = self.checkpoint(i, ff, x) + x   
 
             if i < self.depth - 1 and self_condtioning is not None:
                 x, logits = self_condtioning(x)
                 intermediate_logits.append(logits)
+        
+    
+        kv_stack = torch.cat(kv_stack, dim=-1)
+        kv_stack = self.cache_projection(kv_stack)
+        kv_stack = rearrange(kv_stack, "kv b h n (l d) -> l kv b h n d", l=self.depth)
 
         intermediate_logits = torch.stack(intermediate_logits, dim=0) if len(intermediate_logits) > 0 else None
 
-        cached_kvs = torch.stack(cached_kvs, dim=0) if len(cached_kvs) > 0 else None
-        cached_kvs = {'cache_lengths': total_lens, 'cache': cached_kvs} if exists(cached_kvs) else None
-
+        cached_kvs = torch.cat([o_cache, kv_stack], dim=-2) if exists(o_cache) else kv_stack
+        cached_kvs = {'cache_lengths': cache['cache_lengths'] + 1 if exists(cache) else torch.ones(B).long().to(x.device), 'cache': cached_kvs}
 
         return x, intermediate_logits, cached_kvs
 
@@ -447,7 +430,7 @@ class transformer_lm(nn.Module):
  
         self.embedding = nn.Embedding(vocab_size, dim)
         self.to_logits = shared_embedding_output_layer(self.embedding) if self.tie_embedding else nn.Linear(dim, vocab_size)
-        
+        self.vocab_size = vocab_size
 
         self.post_norm = nn.LayerNorm(dim)
 
@@ -462,102 +445,87 @@ class transformer_lm(nn.Module):
             return x, logits
         return self_condition if (self.self_conditioning or self.intermediate_loss) and self.training else None
 
-    def add_ons(self, x, length, stage, cache=None, **kwargs): # move this to addons module
-        if stage == 'token':
-            if 'durations' in kwargs and hasattr(self, 'length_predictor') and exists(self.length_predictor):
-                x[:,0] = self.length_predictor(kwargs['durations']) + x[:,0]
-            if hasattr(self, 'sep_token') and exists(cache) and kwargs.get('sep', False):
-                x = torch.cat([repeat(self.sep_token, '() d -> b () d', b=x.shape[0]), x], dim=1)
-                length = length + 1 if exists(length) else None
-        if stage == 'logits':
-            if hasattr(self, 'sep_token') and exists(cache) and kwargs.get('sep', False):
-                x = x[:,1:]
-                length = length - 1 if exists(length) else None
-            if hasattr(self, 'next_sentence_pred') and exists(cache):
-                # get the last token of each sequence
-                last_logits = x[torch.arange(x.shape[0]), length-1] 
-                last_logits = self.next_sentence_pred(last_logits)[:, None, :]
-                cache = {'next_sentence_pred': last_logits, **cache}
+    def calc_all_losses(self, logits, targets, lengths):
+        eos_id = -100
+        loss_fn = lambda l, t: F.cross_entropy(rearrange(l, 'b n c -> b c n'), t, ignore_index=-100, reduction='mean')
+        losses = []
 
-        return x, length, cache    
+        def calc_token_loss(logits, targets, length):
+            if length.max() == 1:
+                return None # no loss for single token sequences if no previous prediction is available
+    
+            targets[:,:-1] = targets.clone()[:,1:]        
+            targets = add_eos(targets, eos_id=eos_id, token_lens=length)
+            mask =  token_lens_to_mask(token_lens=length)
+            
+            targets = mark_padding(targets=targets, mask=mask, pad_id=eos_id)
+            loss = loss_fn(logits, targets) #* heads # multiply by heads 
+            
+            return loss
 
-    def forward(self, x, length=None, cache:Dict=None, **kwargs):
+        loss = calc_token_loss(logits, targets.clone(), lengths.clone())
+        if exists(loss): # incase of single token sequences
+            losses.append(loss)
+  
+        losses = torch.stack(losses) 
+        return losses
+
+
+    def forward(self, labels, length, cache:Dict=None, calc_loss=False, **kwargs):
         '''
         x: [B, N] (embedding indices)
         length: [B] (length of each sequence)
         cache: {cache_lengths: [B, N], cache: [L, KV, B, H, N, D]} KV: key and value (2)
         '''
-        x = self.embedding(x)
-        x, length, cache = self.add_ons(x, length, 'token', cache, **kwargs)
+        if labels.shape[1] != length.max():
+            labels = labels[:, :length.max()]
+
+        x = self.embedding(labels)
         x = self.abs_pos(x) 
+
+        subsize = 1
+        B, N, D = x.shape
+        substeps = math.ceil(N / subsize)
+        remaining_length = length.clone()
+        untrimmed_remaining_length = length.clone()
+        unfinished_untrimmed_indices = torch.arange(B, device=labels.device)
+        unfinished_indices = torch.arange(B, device=labels.device)
+        
+        prev_states = cache
+
+        logits_data = torch.zeros((B, N, self.vocab_size), device=x.device)
+
+        for i in range(substeps):
+
+            if exists(prev_states):
+                prev_states['cache'] = prev_states['cache'][:, :,  unfinished_indices]
+                prev_states['cache_lengths'] = prev_states['cache_lengths'][unfinished_indices]
   
-        x, interim_logits, cached_kvs = self.layers(x, length, self_condtioning=self.self_condition_fn(), cache=cache, **kwargs)
-        x = self.post_norm(x)
-        x = self.to_logits(x)
-        x, length, cached_kvs = self.add_ons(x, length, 'logits', cached_kvs, **kwargs)
-        return  x, interim_logits, cached_kvs
+            #print(f'step {i} of {substeps} ({i/substeps*100:.2f}%)') #if random.random() < 0.05 else None
+            curx = x[:, i*subsize:(i+1)*subsize].clone().contiguous()
+            curlength = remaining_length.clone()
+            curlength[curlength > subsize] = subsize
+            remaining_length -= subsize
+            untrimmed_remaining_length -= subsize
+            
+            curx, _, cache = self.layers(curx, curlength, self_condtioning=self.self_condition_fn(), cache=prev_states, **kwargs)
+            curx = self.post_norm(curx)
+            logits = self.to_logits(curx)
+            
+            logits_data[unfinished_untrimmed_indices, i*subsize:(i+1)*subsize] = logits
+       
+            unfinished_indices = (remaining_length > 0).nonzero().squeeze(1)    
+       
+            unfinished_untrimmed_indices = (untrimmed_remaining_length > 0).nonzero().squeeze(1)
+            
+            x = x[unfinished_indices]
+            
+            remaining_length = remaining_length[unfinished_indices]
+            prev_states = cache
+
+        loss = None
+        if calc_loss:
+            loss = self.calc_all_losses(logits=logits_data, targets=labels, lengths=length)
 
 
-
-class CharacterTokenizer(): # only for testing!
-    def __init__(self):
-        self.vocab = ['#', '/'] + list(string.ascii_lowercase) + [' '] # bos/eos -> /, pad -> #
-        self.vocab_size = len(self.vocab)
-        self.token_to_id = {token: i for i, token in enumerate(self.vocab)}
-        self.id_to_token = {i: token for i, token in enumerate(self.vocab)}
-    
-    def __call__(self, text):
-        return self.tokenize(text)
-
-    def tokenize(self, text):
-        return [self.token_to_id[token] for token in text]
-
-def collate_fn(tensors:List[torch.Tensor], pad_token:int): # only for testing!
-    max_len = max([t.shape[0] for t in tensors])
-    lengths = torch.tensor([t.shape[0] for t in tensors])
-    padded_tensors = [torch.cat([t, torch.full((max_len - t.shape[0],), pad_token, dtype=t.dtype)], dim=0) for t in tensors]
-    return torch.stack(padded_tensors, dim=0), lengths
-
-
-@torch.no_grad()
-def caching_test():
-    tokenizer = CharacterTokenizer()
-    model = transformer_lm(
-        dim = 256,
-        vocab_size = tokenizer.vocab_size,
-        depth = 10,
-        heads = 1,
-        dim_head = 32,
-        dropout=0.0,
-        causal = True,
-        shared_kv = True,
-    )
-    model.eval()
-    # test batches to test caching
-    s1_b1, s2_b1, s3_b1 = torch.tensor(tokenizer('/hi')), torch.tensor(tokenizer('/buenos')), torch.tensor(tokenizer('/whats'))
-    s1_b2, s2_b2, s3_b2 = torch.tensor(tokenizer(' there')), torch.tensor(tokenizer(' dias')), torch.tensor(tokenizer(' up'))
-    s1_b3, s2_b3, s3_b3 = torch.tensor(tokenizer(' how')), torch.tensor(tokenizer(' captain')), torch.tensor(tokenizer(' donkey'))
-    s1_b4, s2_b4, s3_b4 = torch.tensor(tokenizer(' u/')), torch.tensor(tokenizer(' hook/')), torch.tensor(tokenizer(' man/'))
-    b1, b1_lengths = collate_fn([s1_b1, s2_b1, s3_b1], pad_token=tokenizer.token_to_id['#'])
-    b2, b2_lengths = collate_fn([s1_b2, s2_b2, s3_b2], pad_token=tokenizer.token_to_id['#'])
-    b3, b3_lengths = collate_fn([s1_b3, s2_b3, s3_b3], pad_token=tokenizer.token_to_id['#'])
-    b4, b4_lengths = collate_fn([s1_b4, s2_b4, s3_b4], pad_token=tokenizer.token_to_id['#'])
-    # comparsion set final states of above should be the same as these
-    f_1, f_2, f_3 = torch.tensor(tokenizer('/hi there how u/')), torch.tensor(tokenizer('/buenos dias captain hook/')), torch.tensor(tokenizer('/whats up donkey man/'))
-    fb, fb_lengths = collate_fn([f_1, f_2, f_3], pad_token=tokenizer.token_to_id['#'])
-
-    logits_s1, interim_logits, cached_kvs = model(b1, length=b1_lengths)
-    logits_s2, interim_logits, cached_kvs_s2 = model(b2, length=b2_lengths, cache=cached_kvs)
-    logits_s3, interim_logits, cached_kvs_s3 = model(b3, length=b3_lengths, cache=cached_kvs_s2)
-    logits_s4, interim_logits, cached_kvs_s4 = model(b4, length=b4_lengths, cache=cached_kvs_s3)
-    logits_fs, interim_logits, cached_kvs_fs = model(fb, length=fb_lengths)
-
-    print('shapes: ', cached_kvs_fs['cache'].shape, cached_kvs_s4['cache'].shape)
-    c_lens = cached_kvs_fs['cache_lengths']
-    mask = torch.arange(c_lens.max())[:,None] < c_lens[None,:]
-    mask = ~mask.T
-    mask = rearrange(mask, 'b i -> () () b () i ()')
-    fs_cache =  cached_kvs_fs['cache'].masked_fill(mask, 0)
-
-    assert torch.allclose(fs_cache, cached_kvs_s4['cache'], atol=0.001), 'failed check ): ): ):'
-    print('things are looking up !')
+        return logits_data, loss, prev_states

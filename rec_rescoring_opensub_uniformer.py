@@ -411,7 +411,7 @@ def main(args):
     }
     train_sampler = Sampler(create_dataset_samples(**train_sample_args), batch_size=args.batch_size, tokenizer=tokenizer, shuffle=True, split_into_splits=400)
 
-    ema = ExponentialMovingAverage(model.parameters(), decay=0.999) 
+    ema = ExponentialMovingAverage(model.parameters(), decay=0.95) # 0.99
     scaler = GradScaler() if args.mixed_precision else None
 
     run_config = {'run_args': args.__dict__, 'model_config': config, 'total_params': total_params}

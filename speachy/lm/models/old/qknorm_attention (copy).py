@@ -257,8 +257,7 @@ class transformer(nn.Module):
             heads = heads,
             depth = 2,
             log_distance = False,
-            norm = False,
-            activation = nn.ReLU, # or silu
+            norm = False
         )
 
         self.token_shifter = lambda x: x

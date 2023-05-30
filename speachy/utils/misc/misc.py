@@ -11,6 +11,7 @@ from collections import OrderedDict
 import argparse
 import pickle as pkl
 from os.path import join
+import re
 
 from speachy.utils.helpers import (
     check_exists,
@@ -43,6 +44,30 @@ def convert_lhotse_to_manifest(split:CutSet, target:str):
             'audio_path': "Not used",
             'duration': entry.duration
         })
+    with open(target, 'w') as f:
+        for line in manifest:
+            f.write(json.dumps(line) + '\n')
+    print(f'Saved manifest to {target}')
+
+def convert_txt_to_manifest(txt:str, target:str):
+    '''
+    Converts a txt file to a nvidia nemo manifest file
+    txt: path to txt file
+    target: path to save (including filename)
+    '''
+    manifest = []
+    with open(txt, 'r') as f:
+        for line in f.readlines():
+            txs = line.split('\n')
+            for tx_ in txs:
+                tx = tx_.strip()
+                if len(tx) > 0:
+                    manifest.append({
+                        'text': tx,
+                        'audio_path': "Not used",
+                        'duration': 0
+                    })
+
     with open(target, 'w') as f:
         for line in manifest:
             f.write(json.dumps(line) + '\n')
@@ -172,7 +197,10 @@ def load_pkl(path):
         return pkl.load(f)
 
 
-def write_trn_files(refs:List[str], hyps:List[str], speakers:List[str]=[], encoded_lens:List[int]=[], fname:str='date', out_dir:str='./'): # added to speachy              
+def remove_multiple_spaces(text:str) -> str:
+    return re.sub(' +', ' ', text)
+
+def write_trn_files(refs:List[str], hyps:List[str], speakers:List[str]=[], encoded_lens:List[int]=[], fname:str='date', out_dir:str='./', rm_spaces=False): # added to speachy              
     print(f'Writing trn files to {out_dir}')
     assert len(refs) == len(hyps), 'refs and hyps must be the same length'
     if len(speakers) != len(refs):
@@ -190,7 +218,12 @@ def write_trn_files(refs:List[str], hyps:List[str], speakers:List[str]=[], encod
     refname = join(out_dir, 'ref_' + fname)
     hypname = join(out_dir, 'hyp_' + fname)
     print(f'Writing {refname} and {hypname}')
-    for i, (ref, hyp, speaker, encoded_len) in enumerate(zip(refs, hyps, speakers, encoded_lens)):
+    for i, (_ref, _hyp, speaker, encoded_len) in enumerate(zip(refs, hyps, speakers, encoded_lens)):
+        if rm_spaces:
+            ref, hyp = remove_multiple_spaces(_ref), remove_multiple_spaces(_hyp)
+        else:
+            ref, hyp = _ref, _hyp
+            
         with open(refname, 'a') as f:
             f.write(f';;len: {encoded_len}\n{ref} ({speaker}_{i})\n')
         with open(hypname, 'a') as f:

@@ -162,6 +162,7 @@ def main(args):
     dev_stage, test_stage = None, None # stage corresponds to the last step of the pipeline that was completed
     print(f'Fetching logits for dev set...')
     if os.path.exists(os.path.join(args.tmp_dir, temp_name_dev)):
+        print('HELLo')
         dev_stage, dev_hyps = load_pickle(os.path.join(args.tmp_dir, temp_name_dev))
 
     if dev_stage == None:
@@ -180,7 +181,7 @@ def main(args):
 
     write_to_log('beam_search_log.txt', f'alpha_range: {alpha_range}, beta_range: {beta_range} Initialising beam search...')
     
-    ray.init(num_cpus=20, num_gpus=0)
+    ray.init(num_cpus=40, num_gpus=0)
     
     beamsearch_fn = partial(
         BeamSearch, 

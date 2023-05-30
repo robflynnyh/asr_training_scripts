@@ -6,7 +6,8 @@ from torch.utils.checkpoint import checkpoint # # gradient/activation checkpoint
 from functools import partial
 import string
 from typing import Optional, Tuple, List, Dict, Union, Callable
-from state_space import S4
+from speachy.lm.tools.train import add_eos, token_lens_to_mask, mark_padding
+from .state_space import S4
 
 def exists(val):
     return val is not None
@@ -135,7 +136,7 @@ class s4ormer_lm(nn.Module):
         depth,
         dropout=0.,
         self_conditioning=False,
-        intermediate_loss=True,
+        intermediate_loss=False,
         **kwargs
     ):
         super().__init__()
@@ -177,18 +178,50 @@ class s4ormer_lm(nn.Module):
             return x, logits
         return self_condition if (self.self_conditioning or self.intermediate_loss) and self.training else None
 
+    def loss_fn(self, logits, interim_logits, targets, length):
+        eos_id = -100
+        loss_fn = lambda l, t: F.cross_entropy(rearrange(l, 'b n c -> b c n'), t, ignore_index=-100, reduction='mean')
+        interim_losses = []
 
-    def forward(self, x, length=None, **kwargs):
+        def calc_token_loss(logits, targets, length):
+            if length.max() == 1:
+                return None # no loss for single token sequences if no previous prediction is available
+    
+            targets[:,:-1] = targets.clone()[:,1:]        
+            targets = add_eos(targets, eos_id=eos_id, token_lens=length)
+            mask =  token_lens_to_mask(token_lens=length)
+            
+            targets = mark_padding(targets=targets, mask=mask, pad_id=eos_id)
+            loss = loss_fn(logits, targets) #* heads # multiply by heads             
+            return loss
+
+        main_loss = calc_token_loss(logits, targets, length)
+        if interim_logits is not None:
+            for interim_logits_ in interim_logits:
+                interim_losses.append(calc_token_loss(interim_logits_, targets, length))
+            main_loss = main_loss * 0.5 + sum(interim_losses) * 0.5
+        
+        return main_loss
+
+
+    def forward(self, x, length, calc_loss = False, **kwargs):
         '''
         x: [B, N] (embedding indices)
         length: [B] (length of each sequence)
         '''
+        if x.shape[1] > length.max():
+            x = x[:, :length.max()] # trim x to max length
+            
+        targets = x.clone() if calc_loss else None
         x = self.embedding(x)
         x, interim_logits = self.layers(x, length, self_condtioning=self.self_condition_fn())
         x = self.post_norm(x)
         x = self.to_logits(x)
 
-        return  x, interim_logits
+        if calc_loss:
+            return self.loss_fn(x, interim_logits, targets, length)
+        else:
+            return  x, interim_logits
 
 
 

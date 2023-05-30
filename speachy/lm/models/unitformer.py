@@ -416,6 +416,25 @@ class StableWeightedSoftmax(nn.Module):
     def forward(self, logits, weights):
         return stable_weighted_softmax(logits, weights)
 
+
+class FinalPredictionLayer(nn.Module):
+    def __init__(self, dim, n_classes, expansion=2):
+        super().__init__()
+        self.proj = nn.Linear(dim, dim*expansion)
+        self.bn = BatchRenorm1d(dim*expansion)
+        self.act = nn.SiLU()
+        self.pred = nn.Linear(dim*expansion, n_classes)
+
+    def forward(self, x, mask=None):
+        x = self.proj(x)
+        x = rearrange(x, 'b n d -> b d n')
+        x = self.bn(x, mask=mask)
+        x = rearrange(x, 'b d n -> b n d')
+        x = self.act(x)
+        x = self.pred(x)
+        return x
+
+
 class transformer(nn.Module):
     def __init__(
             self, 
@@ -453,14 +472,29 @@ class transformer(nn.Module):
 
         self.halfers = nn.ModuleList([])
 
-        self.codebook_dim = 512
-        self.codebook_heads = 2
-        self.codebook_vocab = 256
+        self.codebook_dim = dim
+        self.codebook_heads = 1
+        self.codebook_vocab = 8192
         
-        self.vqs = nn.ModuleList([])
-            
-        self.prediction_layers = nn.ModuleList([])
-        self.pred_scalers = torch.nn.Parameter(torch.ones((depth-1, 1))*5.0, requires_grad=True)
+        
+        self.final_prediction_layer = FinalPredictionLayer(dim, dim)
+
+        self.vq = \
+            VectorQuantize(
+                dim=dim,
+                codebook_size=self.codebook_vocab,
+                codebook_dim = self.codebook_dim,
+                use_cosine_sim = True,
+                decay = 0.99999, 
+                separate_codebook_per_head = True,
+                heads=self.codebook_heads,
+                commitment_weight=0.0
+            )
+     
+    
+        self.vq.project_in.requires_grad_(False) # not needed as they should be nn.Identity() if codebook_dim*heads==model_dim but just in case its changed
+        self.vq.project_out.requires_grad_(False)
+
 
         self.attn_ffs = nn.ModuleList([])
         for lth in range(depth):
@@ -474,38 +508,17 @@ class transformer(nn.Module):
                 **kwargs
             ))
 
-            if lth == 0:
-                self.prediction_layers.append(PredictionLayer(dim, base_vocab_size))
-            else:
-                self.prediction_layers.append(PredictionLayer(dim, dim))
 
-            if lth < depth - 1:
-                self.vqs.append(
-                    VectorQuantize(
-                        dim=dim,
-                        codebook_size=self.codebook_vocab,
-                        codebook_dim = self.codebook_dim,
-                        use_cosine_sim = True,
-                        decay = 0.999,
-                        threshold_ema_dead_code = 0.1,
-                        separate_codebook_per_head=True,
-                        heads=self.codebook_heads,
-                        commitment_weight=0.0
-                    )
-                )
-                self.vqs[-1].project_in.requires_grad_(False)
-                self.vqs[-1].project_out.requires_grad_(False)
-
-                '''RandomProjectionQuantizer(
-                    dim = dim,
-                    codebook_dim = self.codebook_dim,
-                    codebook_size = self.codebook_vocab,
-                    num_codebooks = self.codebook_heads,  
-                    norm = True  
-                )'''
-                #self.vqs[-1].requires_grad_(False)'''
-                self.halfers.append(PreBatchReNorm(dim=dim, fn=Halfer(dim, exp_f=4), affine = True))
-                #self.halfers[-1].fn.requires_grad_(False)
+            '''RandomProjectionQuantizer(
+                dim = dim,
+                codebook_dim = self.codebook_dim,
+                codebook_size = self.codebook_vocab,
+                num_codebooks = self.codebook_heads,  
+                norm = True  
+            )'''
+            #self.vqs[-1].requires_grad_(False)'''
+            self.halfers.append(PreBatchReNorm(dim=dim, fn=Halfer(dim, exp_f=4), affine = True))
+            #self.halfers[-1].fn.requires_grad_(False)
 
         self.einopsfn = EinopsFn()
     
@@ -611,7 +624,7 @@ class transformer(nn.Module):
         #all_ema_data = []
 
         for i in range(self.depth):
-            attn_ff, pred_layer = self.attn_ffs[i], self.prediction_layers[i]
+            attn_ff = self.attn_ffs[i]
 
             ## attention ff blocks ##            
             attn_cache = [cache[ix]['cache'][0] if exists(cache) else None for ix in range(i*self.inner_depth, i*self.inner_depth+self.inner_depth)] 
@@ -621,17 +634,11 @@ class transformer(nn.Module):
             cache_lengths.extend([total_lens]*len(kvs))
             ## attention ff blocks ##
 
-            if i!= 0:
+            if i == self.depth-1:
                 z = x
-                zsim = self.checkpoint(i, pred_layer, z)
+                zsim = self.checkpoint(i, self.final_prediction_layer, z, mask)
                 predictions.append(zsim.clone())
-            else:
-                zsim = self.checkpoint(i, pred_layer, x)
-                intermediate_logits.append(zsim)
-            ntp = grab_last_token(zsim, length)   
-            if i==0:
-                next_token_preds.append(ntp)
-            else:
+                ntp = grab_last_token(zsim, length)   
                 next_token_preds_mse.append(ntp)
      
 
@@ -646,16 +653,15 @@ class transformer(nn.Module):
                 mask, attn_mask, total_lens, x_len, cache_len, pos_bias = self.create_masks_and_positions(x, length, curcache)
                 cache_indices = self.get_cache_indices(x_len, cache_len, curcache['cache'], x) if exists(curcache) else None
 
-                B, N, D = x.shape
-                vq = self.vqs[i]
+                if i == self.depth-2:    
+                    qv, indices, vq_loss, ema_data = self.checkpoint(i, self.vq, x, mask)
+                    if self.training:
+                        all_ema_data.append(ema_data)
+                        orth_loss.append(vq_loss)
                 
-                qv, indices, vq_loss, ema_data = self.checkpoint(i, vq, x, mask)
-                if self.training:
-                    all_ema_data.append(ema_data)
-                    orth_loss.append(vq_loss)
-               
-                quantized_latents.append(qv.detach())
-                last_token_latents.append(grab_last_token(qv.detach(), length))
+                    intermediate_targets.append(indices)
+                    quantized_latents.append(x.detach())
+                    last_token_latents.append(grab_last_token(x.detach(), length))
 
         #orth_loss = orthogonal_loss_fn(pred_matrix)
         #commitment_loss =  orth_loss.sum() * 10.0 
@@ -766,28 +772,22 @@ class transformer_lm(nn.Module):
                 return None
             if exists(first_token_pred):
                 predictions = torch.cat([first_token_pred, predictions], dim=1) # cat zero vect to end of latents
-                latent_negatives = torch.cat([last_token_latents, latents], dim=1) # cat zero vect to end of latents
+                #latent_negatives = torch.cat([last_token_latents, latents], dim=1) # cat zero vect to end of latents
                 latents_targets = torch.cat([latents, torch.zeros(latents.size(0), 1, latents.size(2), device=latents.device)], dim=1)
                 lengths += 1
             else:
                 predictions = predictions[:,:-1] # remove last prediction as no latent to predict
-                latent_negatives = latents[:,:-1].clone() # remove last latent as no prediction to predict it
+                #latent_negatives = latents[:,:-1].clone() # remove last latent as no prediction to predict it
                 latents_targets = latents[:,1:].clone() # remove first latent as no prediction to predict it
             B, N, D = predictions.shape
             mask = torch.arange(N, device=predictions.device).expand(B, N) >= lengths.unsqueeze(1) - 1
-            predictions = l2norm(predictions, dim=-1)
-            latents_targets = l2norm(latents_targets, dim=-1)
-            latent_negatives = l2norm(latent_negatives, dim=-1)
+            predictions = l2norm(predictions, dim=-1, groups=self.layers.codebook_heads)
+            latents_targets = l2norm(latents_targets, dim=-1, groups=self.layers.codebook_heads)
+            #latent_negatives = l2norm(latent_negatives, dim=-1)
     
        
-            mse = F.mse_loss(predictions, latents_targets, reduction='none').sum(-1)
-            '''if self.training:
-                mse_neg = F.mse_loss(predictions, latent_negatives, reduction='none').sum(-1)
-                mse_diff = mse - mse_neg 
-                mse_diff[mse_diff < 0] = 0
-                r_mse_diff = mse - (mse_neg / 8)
-                mse = r_mse_diff + 0.5 # bound
-                #mse[mse_diff > 0] = r_mse_diff[mse_diff > 0] + 0.5 # bound'''
+            mse = 2*(self.layers.codebook_heads) - 2 * (predictions * latents_targets).sum(-1) # cosine distance (mse = legacy)
+            mse.masked_fill_(mask, 0.)
 
             mse = mse.sum() / (~mask).sum() # average over non-masked elements
             if torch.isnan(mse):
@@ -810,8 +810,9 @@ class transformer_lm(nn.Module):
             loss = calc_token_loss(logits, targets.clone(), first_token_pred, lengths.clone())
             if exists(loss): # incase of single token sequences
                 losses.append(loss)
-
+                
         for lth in range(len(tlm_out['predictions'])):
+     
             predictions = tlm_out['predictions'][lth]
             latents = tlm_out['quantized_latents'][lth]
             
@@ -820,6 +821,7 @@ class transformer_lm(nn.Module):
 
             lengths = tlm_out['lengths'][lth+1] # +1 because 1st layer is normal targets
             loss = calc_latents_mse_loss(predictions=predictions, latents=latents, lengths=lengths, first_token_pred=next_token_preds, last_token_latents=last_token_latents)
+      
             if exists(loss):
                 losses.append(loss)
             #print(predictions.shape, latents.shape, lengths.shape, next_token_preds.shape if exists(next_token_preds) else None)
@@ -856,8 +858,8 @@ class transformer_lm(nn.Module):
         cache: {cache_lengths: [B, N], cache: [L, KV, B, H, N, D]} KV: key and value (2)
         '''
         assert labels.shape[1] == length.max(), 'sequence length should be equal to the length of the longest sequence!'
-        total_layer_lengths = torch.zeros(self.layers.depth, device=labels.device)
-        total_layers_losses = torch.zeros(self.layers.depth, device=labels.device)
+        total_layer_lengths = torch.zeros(1, device=labels.device)
+        total_layers_losses = torch.zeros(1, device=labels.device)
 
         x = self.layers.embedding(labels)
         x = self.abs_pos(x) 
@@ -928,8 +930,8 @@ class transformer_lm(nn.Module):
         cache: {cache_lengths: [B, N], cache: [L, KV, B, H, N, D]} KV: key and value (2)
         '''
         assert labels.shape[1] == length.max(), 'sequence length should be equal to the length of the longest sequence!'
-        total_layer_lengths = torch.zeros(self.layers.depth, device=labels.device)
-        total_layers_losses = torch.zeros(self.layers.depth, device=labels.device)
+        total_layer_lengths = torch.zeros(1, device=labels.device)
+        total_layers_losses = torch.zeros(1, device=labels.device)
 
         x = self.layers.embedding(labels)
         x = self.abs_pos(x) 
@@ -1013,7 +1015,7 @@ class transformer_lm(nn.Module):
        
         if len(all_ema_data) > 0:
             for ix in range(len(all_ema_data)):
-                self.layers.vqs[ix]._codebook.update_codebook(
+                self.layers.vq._codebook.update_codebook(
                     bins = all_ema_data[ix]['bins'],
                     embed_sum = all_ema_data[ix]['embed_sum'],
                 )
