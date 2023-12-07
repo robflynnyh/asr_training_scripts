@@ -65,7 +65,7 @@ def enable_dropout(model, dropout_rate=0.0):
             print(f'Enabled dropout with rate {dropout_rate} in {m.__class__.__name__}')
     return model
 
-@torch.no_grad()
+
 def evaluate(args, model, corpus, decoder):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
@@ -78,8 +78,10 @@ def evaluate(args, model, corpus, decoder):
     encoded_lens = []
     #dataloader = tools.eval_dataloader(corpus, args.batch_size)
 
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
+
     dataloader = non_iid_dataloader.get_eval_dataloader(
-        corpus, 
+        corpus.filter(lambda x: x.supervisions[0].recording_id == "AimeeMullins_2009P"), 
         max_duration=args.max_duration, 
         return_speaker=True, 
         batch_size=args.num_meetings, 
@@ -90,50 +92,77 @@ def evaluate(args, model, corpus, decoder):
         single_speaker_with_gaps=args.single_speaker_with_gaps,
         max_allowed_utterance_gap=args.max_allowed_utterance_gap,
         return_meta_data=True,
+        shuffle = True
     )
 
+    epochs = 2
+
+    for epoch in range(epochs):
+        pbar = tqdm(dataloader, total=len(dataloader))
+        for batch_num, batch in enumerate(pbar):
+        
+            audios = batch['audio'].reshape(-1, batch['audio'].shape[-1]).to(device)
+        
+            speaker_ids = ["_".join(el[0]) for el in batch['speakers']]
+
+            audio_lengths = batch['audio_lens'].reshape(-1).to(device)
+            targets = [el[0] for el in batch['text']]
+            targets = [el.replace(" '", "'") for el in targets] # change this in training so that it's not needed here
+
+            audios = noise_audio(audios, args.noise_level)
+
+            r_ids = [el[0]['recording_id'] for el in batch['metadata']]
+
+            processed_signal, processed_signal_length = model.preprocessor(
+                input_signal=audios, 
+                length=audio_lengths
+            )
+            processed_signal = processed_signal.repeat(3, 1, 1)
+            processed_signal_length = processed_signal_length.repeat(3)
+            
+            processed_signal[:2] = model.spec_augmentation(input_spec=processed_signal[:2], length=processed_signal_length[:2])
+
+            model_out = model.forward(
+                processed_signal=processed_signal, 
+                processed_signal_length=processed_signal_length,
+            ) 
+
+            log_probs, _, encoded_len = model_out[:3]
+
+            aug_log_probs = log_probs[:2]
+            target_log_probs = log_probs[-1, None]
+            print(aug_log_probs.shape, target_log_probs.shape)
+
     
+            decoded = decode_lm(target_log_probs.detach().cpu().numpy(), decoder, beam_width=args.beam_size, encoded_lengths=encoded_len)
+            decoded = [el.replace(" '", "'") for el in decoded] # change this in training so that it's not needed here
 
-    pbar = tqdm(dataloader, total=len(dataloader))
-    for batch_num, batch in enumerate(pbar):
-    
-        audios = batch['audio'].reshape(-1, batch['audio'].shape[-1]).to(device)
-      
-        speaker_ids = ["_".join(el[0]) for el in batch['speakers']]
+            pseudo_targets = torch.LongTensor(model.tokenizer.text_to_ids(decoded[0])).unsqueeze(0).to(device).repeat(2, 1)
 
-        audio_lengths = batch['audio_lens'].reshape(-1).to(device)
-        targets = [el[0] for el in batch['text']]
-        targets = [el.replace(" '", "'") for el in targets] # change this in training so that it's not needed here
+            print(encoded_len.shape, pseudo_targets.shape)
+        
+            loss =  model.loss(
+                log_probs=aug_log_probs, 
+                targets=pseudo_targets, 
+                input_lengths=encoded_len[:2],
+                target_lengths=torch.LongTensor([len(pseudo_targets[0]), len(pseudo_targets[1])]).to(device)
+            )
+            
+            # loss.backward()
+            # optimizer.step()
+            # optimizer.zero_grad()
 
-        audios = noise_audio(audios, args.noise_level)
+            print(f'Decoded: {" - ".join([el for el in decoded])}\n')
+            print(f'Targets: {" - ".join([el for el in targets])}')
 
-        r_ids = [el[0]['recording_id'] for el in batch['metadata']]
+            if epoch == epochs - 1:
+                hyps.extend(decoded)
+                refs.extend(targets)
+                speakers.extend(speaker_ids)
+                encoded_lens.extend(encoded_len.cpu().tolist())
 
-        model_out = model.forward(
-            input_signal=audios, 
-            input_signal_length=audio_lengths,
-            segment_lens=batch['segment_lens'] if isfalse(args.do_not_pass_segment_lens) else None,
-            return_cross_utterance_attention=True if args.return_attention else None 
-        ) 
+## CUDA_VISIBLE_DEVICES='1' python eval_ctc_dynamic.py --checkpoint_dir ../checkpoints_done/ASR/TEDLIUM/checkpoints_cosine_noths/ --checkpoint 'checkpoint_359_id_52.pt' --max_duration 1
 
-        log_probs, _, encoded_len = model_out[:3]
-        additional_outputs = model_out[-1]
-
-        save_attention_information(args, batch_num, additional_outputs, speaker_ids, targets)
-
-        log_probs = log_probs.detach().cpu().numpy()
-
-   
-        decoded = decode_lm(log_probs, decoder, beam_width=args.beam_size, encoded_lengths=encoded_len)
-        decoded = [el.replace(" '", "'") for el in decoded] # change this in training so that it's not needed here
-
-        print(f'Decoded: {" - ".join([el for el in decoded])}\n')
-        print(f'Targets: {" - ".join([el for el in targets])}')
-       
-        hyps.extend(decoded)
-        refs.extend(targets)
-        speakers.extend(speaker_ids)
-        encoded_lens.extend(encoded_len.cpu().tolist())
 
     if args.sclite:
         refname, hypname = tools.write_trn_files(refs=refs, hyps=hyps, speakers=speakers, encoded_lens=encoded_lens, out_dir=args.sclite_dir)

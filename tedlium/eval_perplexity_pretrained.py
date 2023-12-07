@@ -58,29 +58,13 @@ def main(args):
     device = torch.device(args.device)
     #tokenizer = AutoTokenizer.from_pretrained('EleutherAI/gpt-neo-125M')
     tokenizer = AutoTokenizer.from_pretrained(
-<<<<<<< HEAD
-<<<<<<< HEAD
         "EleutherAI/pythia-70m",
-=======
-        "EleutherAI/pythia-19m",
->>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
-=======
-        "EleutherAI/pythia-19m",
->>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
         revision="step143000"
     )
     corpus = tools.load_corpus()
     #model = AutoModelForCausalLM.from_pretrained('EleutherAI/gpt-neo-125M')
     model = GPTNeoXForCausalLM.from_pretrained(
-<<<<<<< HEAD
-<<<<<<< HEAD
         "EleutherAI/pythia-70m",
-=======
-        "EleutherAI/pythia-19m",
->>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
-=======
-        "EleutherAI/pythia-19m",
->>>>>>> 2bdc8a41419433bc507713554e874db5a91aabea
         revision="step143000"
     )
 

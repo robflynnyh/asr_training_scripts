@@ -210,6 +210,7 @@ def get_eval_dataloader(
     speaker_gap=1.0,
     single_speaker_with_gaps=False,
     max_allowed_utterance_gap=-1,
+    shuffle=False,
     ):
     assert isfalse(split_speakers) or concat_samples, "concat_samples must be True if split_speakers is True"
     assert text_only, "Not here use standard dataloader"
@@ -228,7 +229,7 @@ def get_eval_dataloader(
     return torch.utils.data.DataLoader(
         Minimal_Evaluation_IID_Dataset(samples, return_speaker=return_speaker),
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=shuffle,
         collate_fn=collate_batch_fn_eval
     )
 
